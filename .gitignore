@@ -1,0 +1,12 @@
+out/
+user/
+__pycache__/
+/*.ini
+*.orig
+/*.spv
+*.mp4
+/.vscode
+dist/
+/settings.ini
+!/settings.example.ini
+/.claude/

@@ -1,0 +1,82 @@
+/* C interface of the GPU library (gpu/): shadPS4's Liverpool/Vulkan video core,
+ * GnmDriver, VideoOut and kernel event queues, adapted to the native loader. */
+#ifndef THEATRHYTHM_GPU_H
+#define THEATRHYTHM_GPU_H
+#include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+typedef struct {
+    const char *title;          /* window title */
+    const char *serial;         /* CUSA id, names the pipeline cache */
+    const char *user_dir;       /* pipeline cache/logs directory */
+    uint32_t sdk_version;       /* from the eboot's procparam */
+    uint32_t psf_attributes;    /* param.sfo ATTRIBUTE */
+    int32_t width, height;      /* initial window size */
+} TheatrhythmGpuConfig;
+/* Registers kernel event queues (needed with or without graphics). */
+void theatrhythm_gpu_register_kernel(void);
+/* Creates window, Vulkan device, presenter and GPU command processor. */
+int theatrhythm_gpu_init(const TheatrhythmGpuConfig *config);
+/* Function for an imported NID ("NID#lib#mod"), or 0 when the GPU library does not provide it. */
+uintptr_t theatrhythm_gpu_resolve(const char *scoped_nid);
+/* Called first by the loader's SIGSEGV handler: 1 when a GPU page-tracking fault was handled. */
+int theatrhythm_gpu_handle_fault(void *ucontext, void *address);
+/* THEATRHYTHM_WRITE_LOG=1: prints the logged GPU-side writes to guest memory near the fault. */
+void theatrhythm_gpu_dump_guest_writes(void *ucontext);
+/* Keyboard text entry through the game window (IME dialog). begin returns 0 when
+ * no window exists; poll returns 0 typing, 1 confirmed, 2 cancelled (UTF-8 text). */
+int theatrhythm_gpu_text_input_begin(const char *initial_utf8, const char *prompt_utf8);
+int theatrhythm_gpu_text_input_poll(char *out_utf8, uint64_t size);
+/* A list for the player to choose from, drawn over the game (save list). images: a PNG path per
+ * item drawn beside it (NULL array or entry: none). begin: 0 when no window exists.
+ * poll: -1 while open, -2 cancelled, else the chosen index. */
+int theatrhythm_gpu_choice_begin(const char *title, const char *const *items, const char *const *images, int count, int focus);
+int theatrhythm_gpu_choice_poll(void);
+/* Confirmation with a separate preview of the new save; PNG data is decoded before returning. */
+int theatrhythm_gpu_choice_confirm(const char *title, const char *const *items, int count, int focus,
+                                 const unsigned char *png, uint64_t size, const char *caption, const char *unavailable);
+/* 1 while a dialog (save list, text entry) is shown: the game's pad input is held neutral. */
+int theatrhythm_gpu_overlay_captures_input(void);
+/* Opens the Display Settings panel (the Options menu's Display Settings button); 1 while it is open. */
+void theatrhythm_display_settings_open(void);
+int theatrhythm_display_settings_is_open(void);
+/* The Options menu's Display Settings page (runtime_display_page.c). get: a setting's value (window
+ * mode 0 windowed, 1 borderless, 2 fullscreen; resolution: index into the sizes, largest first;
+ * VSync 0/1; frame rate limit in FPS, 0 none). set applies at once (the window follows on its next
+ * event poll). resolution: the count of sizes, and size `index` when it exists. save: settings.ini. */
+enum { THEATRHYTHM_DISPLAY_MODE, THEATRHYTHM_DISPLAY_RESOLUTION, THEATRHYTHM_DISPLAY_VSYNC, THEATRHYTHM_DISPLAY_FPS_LIMIT };
+int theatrhythm_display_get(int setting);
+void theatrhythm_display_set(int setting, int value);
+int theatrhythm_display_resolution(int index, int *width, int *height);
+void theatrhythm_display_save(void);
+/* Controller vibration strength (settings.ini vibration), 0 (off) to 100 (the game's own). */
+int theatrhythm_gpu_vibration_percent(void);
+/* Button remapping (settings.ini pad_map, or key_map when keyboard is 1; THEATRHYTHM_PAD_MAP and
+ * THEATRHYTHM_KEY_MAP override them): "" when unset. */
+const char *theatrhythm_pad_map(int keyboard);
+/* Dialog confirm button: 0 Cross confirms, Circle cancels; 1 Circle confirms, Cross cancels. */
+int theatrhythm_gpu_menu_confirm_swap(void);
+/* Button icon set (settings.ini button_icons, THEATRHYTHM_BUTTON_ICONS): "auto" (the device last
+ * used), "ps4" (the game's own), "xbox" or "keyboard". Valid once theatrhythm_gpu_init returned. */
+const char *theatrhythm_button_icons(void);
+/* sceCommonDialogInitialize ran (runtime_services.c): the upstream dialog libraries check it. */
+void theatrhythm_gpu_common_dialog_initialized(void);
+/* Master volume of the game's audio (settings.ini master_volume), 0 to 200 percent (100: the
+ * game's own mix; more is boosted behind a soft limiter). Read for every audio buffer. */
+int theatrhythm_gpu_audio_volume_percent(void);
+/* Speaker layout for the game's 7.1 audio (settings.ini audio_channels): 0 automatic (the
+ * device's), 1 stereo, 2 5.1, 3 7.1. Read when an audio port is opened. */
+int theatrhythm_gpu_audio_channels(void);
+/* Number of symbols registered by the vendored libraries (diagnostics). */
+unsigned theatrhythm_gpu_symbol_count(void);
+/* Yields of threads waiting for guest memory copies (CPU report). */
+unsigned long long theatrhythm_gpu_copy_yields(void);
+/* Trophy unlocked (any thread): its name as a notice in the corner. The other arguments are kept
+ * for the runtime's call: id, description and PNG icon. */
+void theatrhythm_gpu_toast_trophy(int id, const char *title, const char *detail, const unsigned char *png,
+                                 uint64_t png_size);
+#ifdef __cplusplus
+}
+#endif
+#endif
