@@ -25,8 +25,11 @@ The pipeline (`run.py`):
    and enters the game. An import with no implementation becomes a trap that prints
    `STOP: first unsupported PS4 import: <name>` and exits.
 
-The renderer draws at the game's own resolution and scales the picture to the window: no
-upscaler, TAA, motion vectors or post-process hooks. The only overlay is the PS4's system UI (save
+The renderer draws at the game's own resolution (2160p in PS4 Pro mode with `render_resolution=4k`,
+the default: `sceKernelIsNeoMode` returns 1, the video out is 3840x2160 and probe.c serves
+`boot.config` with `platform-ps4-videoout-width=3840`; or 1080p) and scales the picture to the window
+(borderless by default, at the desktop resolution). A larger frame is filtered down over each output
+pixel's footprint in `post_process.frag`: no upscaler, TAA, motion vectors or post-process hooks. The only overlay is the PS4's system UI (save
 list, text entry, trophy notices) and the shader-cache notes (`THEATRHYTHM_SHADER_NOTES=1`).
 
 ## Running from the source tree

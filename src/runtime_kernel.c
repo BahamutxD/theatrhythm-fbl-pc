@@ -289,8 +289,11 @@ static ABI void set_thread_dtors(GuestCallback dtors) { runtime_guest_thread_dto
 GuestCallback runtime_guest_thread_atexit_count, runtime_guest_thread_atexit_report;
 static ABI void set_thread_atexit_count(GuestCallback count) { runtime_guest_thread_atexit_count=count; }
 static ABI void set_thread_atexit_report(GuestCallback report) { runtime_guest_thread_atexit_report=report; }
-/* A base PS4, as the GPU core assumes (gpu/shim/theatrhythm_gpu.cpp, sceKernelIsNeoMode). */
-static ABI int32_t neo_mode(void) { return 0; }
+/* sceKernelIsNeoMode / sceKernelHasNeoMode: 1 on a PS4 Pro, which render_resolution=4k reports
+ * (probe.c), as the GPU core does (gpu/shim/theatrhythm_gpu.cpp). */
+static int neo;
+void runtime_kernel_set_neo_mode(int enabled) { neo=enabled!=0; }
+static ABI int32_t neo_mode(void) { return neo; }
 /* param.sfo ATTRIBUTE (probe.c). sceKernelGetCpumode: 2 when the title asks for six and seven
  * CPUs (bits 15 and 16), 5 for seven only, else 0 (shadPS4 process.cpp). */
 static uint32_t psf_attributes;

@@ -40,6 +40,18 @@ static void *ABI blocker(void *arg) {
     pthread_mutex_unlock(&block_lock);
     return NULL;
 }
+/* A SysV leaf loop with 16 words of pattern in its red zone (the 128 bytes below rsp), checked until
+ * redzone_stop is set: returns NULL while they hold, 1 once one changed. */
+volatile int redzone_stop, redzone_ready;
+void *ABI redzone_spinner(void *arg);
+__asm__(".text\n.globl redzone_spinner\nredzone_spinner:\n"
+        " movabs $0x5a5a5a5a00000000,%rax\n xor %ecx,%ecx\n"
+        "1: lea (%rax,%rcx),%rdx\n mov %rdx,-128(%rsp,%rcx,8)\n inc %ecx\n cmp $16,%ecx\n jb 1b\n"
+        " movl $1,redzone_ready(%rip)\n"
+        "2: xor %ecx,%ecx\n"
+        "3: lea (%rax,%rcx),%rdx\n cmp %rdx,-128(%rsp,%rcx,8)\n jne 4f\n inc %ecx\n cmp $16,%ecx\n jb 3b\n"
+        " cmpl $0,redzone_stop(%rip)\n je 2b\n xor %eax,%eax\n ret\n"
+        "4: mov $1,%eax\n ret\n");
 static void ABI on_exception(int32_t signum,GuestUcontext *u) {
     if (signum==30) { handled_sp=*(uint64_t *)((char *)u+0xf8); handled_on=runtime_thread_current(); }
 }
@@ -140,6 +152,19 @@ int main(void) {
     for (int i = 0; i < 2000 && !__atomic_load_n(&t->finished, __ATOMIC_ACQUIRE); ++i) usleep(1000);
     assert(raise_exception(t, 30) == ERR(3) && attr_destroy(&detached) == 0);
     assert(remove_exception_handler(30) == 0 && install_exception_handler(30, on_exception) == 0);
+    /* A thread interrupted in a leaf function keeps its red zone (the APC runs below it). */
+    assert(thread_create(&t, NULL, redzone_spinner, NULL, "redzone") == 0);
+    while (!redzone_ready) {}
+    const uint64_t apc_before = raised_apc;
+    for (int i = 0; i < 50; ++i) {
+        const uint64_t delivered = exceptions_delivered;
+        assert(raise_exception(t, 30) == 0);
+        for (int w = 0; w < 2000 && exceptions_delivered == delivered; ++w) usleep(100);
+        assert(exceptions_delivered == delivered + 1);
+    }
+    redzone_stop = 1;
+    void *clobbered = (void *)1;
+    assert(thread_join(t, &clobbered) == 0 && clobbered == NULL && raised_apc == apc_before + 50);
 
     assert(thread_create(&t, NULL, cleaner, NULL, "cleaner") == 0 && thread_join(t, NULL) == 0);
     assert(!strcmp(cleanup_log, "bca"));

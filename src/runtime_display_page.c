@@ -66,12 +66,14 @@ static const char *class_name(const void *object) { return (const char *)load((c
 #define MUSIC_STAGE_LAYER 3    /* ActiveLayerType.MusicStage: the MS Settings page */
 
 /* The page's rows that show display settings, found by their help text term. */
-enum { ROW_WINDOW, ROW_RESOLUTION, ROW_VSYNC, ROW_FPS, ROWS };
+enum { ROW_WINDOW, ROW_RESOLUTION, ROW_VSYNC, ROW_FPS, ROW_RENDER, ROWS };
 static const struct { const char *detail, *help; } rows[ROWS]={
     {"Common/DetailText/Config0018","Windowed, a borderless window covering the screen, or exclusive fullscreen."},
     {"Common/DetailText/Config0019","The window's size when windowed, the screen mode in fullscreen. Borderless always uses the desktop resolution."},
     {"Common/DetailText/Config0024","Waits for the monitor: no tearing, slightly more input delay."},
     {"Common/DetailText/Config0042","Caps how many frames are shown per second. Off follows the display."},
+    /* Timing display's row, an On/Off selector like VSync's */
+    {"Common/DetailText/Config0026","4K as on PS4 Pro, filtered down to the window: sharper. 1080p as on PS4: lighter on the GPU. Applies after a restart."},
 };
 static const char *const mode_names[]={"Windowed","Borderless windowed","Fullscreen"};
 static const int fps_stops[]={0,30,60,120,144,240}; /* the slider's six stops */
@@ -172,13 +174,14 @@ static int row_of_behaviour(const void *behaviour) {
     return -1;
 }
 
-/* The value a row shows: VSync and the frame rate limit as the selected index; the pills (Window
- * mode, Resolution) draw theirs in button_value. */
+/* The value a row shows: VSync, the frame rate limit and the render resolution (1080p left, 4K
+ * right) as the selected index; the pills (Window mode, Resolution) draw theirs in button_value. */
 static void show_row(int row) {
     unsigned char *item=row_item[row];
     if (!item) return;
     unsigned char *parameter=(unsigned char *)load(item+0x38); /* ConfigListItemView.ViewParameter */
     if (row==ROW_VSYNC) put32(parameter+0x14,theatrhythm_display_get(THEATRHYTHM_DISPLAY_VSYNC) ? 0 : 1);
+    else if (row==ROW_RENDER) put32(parameter+0x14,theatrhythm_display_get(THEATRHYTHM_DISPLAY_RENDER_4K) ? 1 : 0);
     else if (row==ROW_FPS) {
         const int fps=theatrhythm_display_get(THEATRHYTHM_DISPLAY_FPS_LIMIT);
         int at=0;
@@ -506,12 +509,13 @@ static ABI int submit(HookRegs *r) {
 }
 
 /* ConfigListItemSlider/Selector::OnHorizontalInput(this, direction 0 left / 1 right) -> handled:
- * VSync (a selector) and the frame rate limit (a slider) change the runner's settings instead of
- * the game's (no _onChangeData). Both keep the value count at +0x50; `se`: the select sound's field. */
+ * VSync and the render resolution (selectors) and the frame rate limit (a slider) change the
+ * runner's settings instead of the game's (no _onChangeData). Both keep the value count at +0x50;
+ * `se`: the select sound's field. */
 static int horizontal(HookRegs *r, size_t se) {
     unsigned char *item=(unsigned char *)r->rdi;
     const int row=display_mode ? row_of(item) : -1;
-    if (row!=ROW_VSYNC && row!=ROW_FPS) return 0;
+    if (row!=ROW_VSYNC && row!=ROW_FPS && row!=ROW_RENDER) return 0;
     unsigned char *parameter=(unsigned char *)load(item+0x38);
     const int old=load32(parameter+0x14), stops=load32(item+0x50);
     const int direction=(int)r->rsi;
@@ -522,6 +526,7 @@ static int horizontal(HookRegs *r, size_t se) {
     if (index==old) return 1;
     put32(parameter+0x14,index);
     if (row==ROW_VSYNC) theatrhythm_display_set(THEATRHYTHM_DISPLAY_VSYNC,index==0);
+    else if (row==ROW_RENDER) theatrhythm_display_set(THEATRHYTHM_DISPLAY_RENDER_4K,index==1);
     else if (index<6) theatrhythm_display_set(THEATRHYTHM_DISPLAY_FPS_LIMIT,fps_stops[index]);
     refresh_view(item);
     display_dirty=1;
@@ -620,13 +625,17 @@ static ABI int translate(HookRegs *r) {
     const char *text=NULL;
     if (!strcmp(term,"Scene/Config/TopButton/007") && in_button(component)) text="Display Settings";
     else if (describing && !strcmp(term,"Common/DetailText/Config0007")) /* Logo Usage's description */
-        text="Change the window mode, resolution, VSync and frame rate limit";
+        text="Change the window mode, resolution, VSync, frame rate limit and render resolution";
     else if (display_mode) {
         if (!strcmp(term,"Scene/Config/TopButton/002")) text="Display Settings";
         else if (!strcmp(term,"Scene/Config/MsSettings/004")) /* both pills */
             text=component && in_row(component,row_item[ROW_RESOLUTION]) ? "Resolution" : "Window mode";
         else if (!strcmp(term,"Scene/Config/MsSettings/010")) text="VSync";
         else if (!strcmp(term,"Scene/Config/MsSettings/017")) text="Frame rate limit";
+        else if (!strcmp(term,"Scene/Config/MsSettings/011")) text="Render resolution";
+        else if ((!strcmp(term,"Scene/Config/On") || !strcmp(term,"Scene/Config/Off")) && component &&
+                 in_row(component,row_item[ROW_RENDER])) /* the selector's two values */
+            text=term[14]=='n' ? "1080p" : "4K";
         else if (!strncmp(term,"Scene/Config/",13) && term[13]>='1' && term[13]<='5' && !term[14]) text=fps_ticks[term[13]-'0'];
         else if (!strcmp(term,"Common/HelpBar/DedicatedScene")) { /* the pills' "Open setting window" */
             void *swap=guest_text((const void *)r->rdi,"Common/HelpBar/SwitchSetting");

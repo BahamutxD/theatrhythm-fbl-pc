@@ -33,6 +33,7 @@ public:
     u64 CurrentTime();
     s32 Stop();
     bool SetLooping(bool is_looping);
+    s32 JumpToTime(u64 time);
 
 private:
     // Memory Replacement

@@ -100,7 +100,7 @@ std::chrono::steady_clock::time_point last_present{};
 std::atomic<bool> display_open{false};
 int display_row = 0;
 bool display_dirty = false;
-enum DisplayRow : int { RowMode, RowResolution, RowMonitor, RowVsync, RowFps, RowQueued, RowAnisotropy, RowCount };
+enum DisplayRow : int { RowMode, RowResolution, RowMonitor, RowVsync, RowFps, RowQueued, RowAnisotropy, RowRender, RowCount };
 
 // The colours of the game's own settings pages (Settings > MS Settings).
 namespace PageInk {
@@ -310,6 +310,10 @@ void ChangeDisplayRow(int row, int delta) {
     case RowFps: s.fps_limit = StepValue(G::FpsLimits, s.fps_limit, delta); break;
     case RowQueued: s.frames_queued = StepValue(G::FramesQueued, s.frames_queued, delta); break;
     case RowAnisotropy: s.anisotropy = StepValue(G::Anisotropies, s.anisotropy, delta); break;
+    case RowRender:
+        s.render_resolution = s.render_resolution == TheatrhythmSettings::Render4k ? TheatrhythmSettings::Render1080p
+                                                                                   : TheatrhythmSettings::Render4k;
+        break;
     default: return;
     }
     display_dirty = true;
@@ -370,6 +374,14 @@ DisplayRowText DisplayRowAt(int row) {
         std::string text = value ? std::to_string(value) + "x" : "Game default";
         if (value != s.startup_anisotropy) text += "  (after restart)";
         return {"Anisotropic filtering", text, "Sharper textures seen at an angle. Applies after a restart."};
+    }
+    case RowRender: {
+        const int value = s.render_resolution;
+        std::string text = value == TheatrhythmSettings::Render4k ? "4K (3840 x 2160)" : "1080p";
+        if (value != s.startup_render_resolution) text += "  (after restart)";
+        return {"Render resolution", text,
+                "4K as on PS4 Pro, filtered down to the window: sharper. 1080p as on PS4: lighter on the GPU. "
+                "Applies after a restart."};
     }
     default: return {"", "", ""};
     }

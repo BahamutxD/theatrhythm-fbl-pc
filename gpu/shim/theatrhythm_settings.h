@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include "theatrhythm_graphics.h"
+
 namespace TheatrhythmSettings {
 
 /// Speaker layout the game's 7.1 audio is mixed down to (src/runtime_audio.c): the playback
@@ -30,10 +32,15 @@ inline constexpr int MasterVolumeMin = 0, MasterVolumeMax = 200, MasterVolumeDef
 /// game's own PS4 icons, or a sheet from assets/button_icons (src/runtime_button_icons.c).
 enum ButtonIcons : int { ButtonIconsAuto = 0, ButtonIconsPs4, ButtonIconsXbox, ButtonIconsKeyboard, ButtonIconsCount };
 inline constexpr std::string_view ButtonIconKeys[ButtonIconsCount] = {"auto", "ps4", "xbox", "keyboard"};
+/// Size the game renders at (key render_resolution): the PS4's 1080p, or the PS4 Pro's 2160p
+/// (PS4 Pro mode and a 3840x2160 video out, probe.c mount_boot_config_4k).
+enum RenderResolution : int { Render1080p = 0, Render4k, RenderResolutionCount };
+inline constexpr std::string_view RenderResolutionKeys[RenderResolutionCount] = {"1080p", "4k"};
 
 struct Values {
-    /// TheatrhythmGraphics::DisplayMode (key display_mode: windowed, borderless, fullscreen).
-    std::atomic<int> display_mode{0};
+    /// TheatrhythmGraphics::DisplayMode (key display_mode: windowed, borderless, fullscreen);
+    /// borderless by default, so the picture is scaled to the desktop resolution.
+    std::atomic<int> display_mode{TheatrhythmGraphics::Borderless};
     std::atomic<bool> vsync{true};
     /// SDL display index the window opens on, -1 the primary (key monitor, THEATRHYTHM_MONITOR).
     std::atomic<int> monitor{-1};
@@ -72,6 +79,10 @@ struct Values {
     std::atomic<int> audio_channels{AudioChannelsAuto};
     /// ButtonIcons; read once, before the game loads its UI.
     int button_icons = ButtonIconsAuto;
+    /// RenderResolution, 4k by default; read once, before the game starts.
+    int startup_render_resolution = Render4k;
+    /// What the Display Settings pages save for the next start.
+    std::atomic<int> render_resolution{Render4k};
 };
 
 Values& Get();
@@ -79,8 +90,8 @@ Values& Get();
 /// Reads the file, then the environment overrides. Called once at start.
 void Load();
 
-/// Writes the display keys (display_mode, monitor, window, vsync, fps_limit, frames_queued, anisotropy)
-/// into the file in place: their lines are replaced, missing ones appended, the rest kept.
+/// Writes the display keys (display_mode, monitor, window, vsync, fps_limit, frames_queued, anisotropy,
+/// render_resolution) into the file in place: their lines are replaced, missing ones appended, the rest kept.
 void SaveDisplay();
 
 } // namespace TheatrhythmSettings

@@ -28,8 +28,9 @@ constexpr int IndexOf(const std::array<T, N>& values, const T& value, int fallba
     return fallback;
 }
 
+/// A listed mode, else borderless (the default).
 inline int ParseDisplayMode(std::string_view text) {
-    return IndexOf(DisplayModeKeys, text, Windowed);
+    return IndexOf(DisplayModeKeys, text, Borderless);
 }
 /// The primary display, the default. -1 keeps it distinct from an explicit index 0, which names
 /// the first display SDL3 lists even when it is not the primary.

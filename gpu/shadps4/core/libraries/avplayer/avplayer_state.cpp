@@ -357,6 +357,25 @@ bool AvPlayerState::SetLooping(bool is_looping) {
     return true;
 }
 
+// Called inside GAME thread
+// theatrhythm: the PS4 player reports a finished jump with a WarningId event carrying
+// WAR_JUMP_COMPLETE. Theatrhythm pauses a Music Stage's background movie, jumps to 0 and waits
+// for that event before the stage starts. The source is not seeked: the game only jumps to 0
+// right after starting or before restarting, where playback already is at the start.
+bool AvPlayerState::JumpToTime(u64 time) {
+    std::shared_lock lock(m_source_mutex);
+    if (m_up_source == nullptr) {
+        LOG_ERROR(Lib_AvPlayer, "Could not jump to {} ms. No source.", time);
+        return false;
+    }
+    if (time != 0) {
+        LOG_WARNING(Lib_AvPlayer, "Jump to {} ms is not seeked; playback stays where it is.", time);
+    }
+    lock.unlock();
+    OnWarning(ORBIS_AVPLAYER_ERROR_WAR_JUMP_COMPLETE);
+    return true;
+}
+
 // May be called from different threads
 void AvPlayerState::OnWarning(u32 id) {
     // Forward to CONTROLLER thread

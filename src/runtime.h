@@ -113,6 +113,7 @@ uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *n
 uintptr_t runtime_kernel_resolve(const char *name);
 /* param.sfo ATTRIBUTE of the title (sceKernelGetCpumode). */
 void runtime_kernel_set_psf_attributes(uint32_t attributes);
+void runtime_kernel_set_neo_mode(int enabled);
 uintptr_t runtime_file_resolve(const char *name);
 uintptr_t runtime_services_resolve(const char *name);
 /* Offline networking (POSIX sockets, libSceHttp extras), PSN libraries and their dialogs, and

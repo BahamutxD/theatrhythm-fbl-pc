@@ -442,6 +442,38 @@ static int mount_config_icon(const char *boot) {
     return 1;
 }
 
+/* render_resolution=4k: the game's Media/boot.config with platform-ps4-videoout-width=3840, written
+ * next to boot.bin as boot_4k.config and served in its place. In PS4 Pro mode Unity then registers
+ * 3840x2160 display buffers and renders at that size; without the key it keeps 1080p. The game
+ * opens it as /app0/media/boot.config. 1 when mounted. */
+static int mount_boot_config_4k(const char *boot,const char *app0) {
+    static const char *const guests[]={"/app0/Media/boot.config","/app0/media/boot.config",
+        "/archive/mount/point/Media/boot.config","/archive/mount/point/media/boot.config"};
+    static const char key[]="platform-ps4-videoout-width=";
+    const char *slash=strrchr(boot,'/'), *back=strrchr(boot,'\\');
+    if (back && (!slash || back>slash)) slash=back;
+    char source[600], host[512], line[512];
+    snprintf(source,sizeof(source),"%s/Media/boot.config",app0);
+    snprintf(host,sizeof(host),"%.*sboot_4k.config",slash ? (int)(slash-boot+1) : 0,boot);
+    FILE *in=fopen(source,"rb"), *out=in ? fopen(host,"wb") : NULL;
+    if (!out) {
+        if (in) fclose(in);
+        printf("Render: cannot write %s from %s; the game renders at 1080p\n",host,source);
+        return 0;
+    }
+    while (fgets(line,sizeof(line),in)) {
+        if (strncmp(line,key,sizeof(key)-1)) fputs(line,out);
+        if (line[0] && line[strlen(line)-1]!='\n') fputc('\n',out);
+    }
+    fprintf(out,"%s3840\n",key);
+    fclose(in);
+    int failed=fclose(out)!=0;
+    for (size_t i=0;!failed && i<sizeof(guests)/sizeof(*guests);++i) failed=runtime_file_mount(guests[i],host)!=0;
+    if (failed) { printf("Render: cannot serve %s; the game renders at 1080p\n",host); return 0; }
+    printf("Render: 3840x2160 in PS4 Pro mode (%s)\n",host);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
 #ifndef _WIN32
@@ -744,6 +776,10 @@ int main(int argc, char **argv) {
         printf("GPU: window and Vulkan presenter ready; SDK 0x%08x, %u HLE symbols\n",(unsigned)sdk,theatrhythm_gpu_symbol_count());
         if (app0) configure_button_icons(argv[1]); /* settings are read by theatrhythm_gpu_init */
         if (app0) monitor_icon = mount_config_icon(argv[1]);
+        if (theatrhythm_render_4k()) {
+            runtime_kernel_set_neo_mode(1);
+            if (app0) mount_boot_config_4k(argv[1],app0);
+        }
     }
     unsigned char *traps = allocate(round_page((import_count + 1) * 32));
     unsigned char *data_traps = allocate((import_count + 1) * page_size);

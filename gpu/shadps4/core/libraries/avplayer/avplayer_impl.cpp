@@ -224,4 +224,11 @@ bool AvPlayer::SetLooping(bool is_looping) {
     return m_state->SetLooping(is_looping);
 }
 
+s32 AvPlayer::JumpToTime(u64 time) {
+    if (m_state == nullptr || !m_state->JumpToTime(time)) {
+        return ORBIS_AVPLAYER_ERROR_OPERATION_FAILED;
+    }
+    return ORBIS_OK;
+}
+
 } // namespace Libraries::AvPlayer

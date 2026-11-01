@@ -184,7 +184,7 @@ u64 PS4_SYSV_ABI sceKernelReadTsc() { return runtime_read_tsc(); }
 u64 PS4_SYSV_ABI sceKernelGetProcessTime() { return runtime_process_time_us(); }
 u64 PS4_SYSV_ABI sceKernelGetProcessTimeCounter() { return runtime_process_time_counter(); }
 u64 PS4_SYSV_ABI sceKernelGetProcessTimeCounterFrequency() { return 1'000'000'000; }
-s32 PS4_SYSV_ABI sceKernelIsNeoMode() { return 0; } // base PS4
+s32 PS4_SYSV_ABI sceKernelIsNeoMode() { return theatrhythm_render_4k(); } // PS4 Pro with render_resolution=4k
 s32 PS4_SYSV_ABI sceKernelGetCompiledSdkVersion(s32* ver) {
     if (!ver) return ORBIS_KERNEL_ERROR_EINVAL;
     *ver = s32(g_sdk_version);
@@ -413,6 +413,7 @@ extern "C" int theatrhythm_display_get(int setting) {
     }
     case THEATRHYTHM_DISPLAY_VSYNC: return s.vsync ? 1 : 0;
     case THEATRHYTHM_DISPLAY_FPS_LIMIT: return s.fps_limit;
+    case THEATRHYTHM_DISPLAY_RENDER_4K: return s.render_resolution == TheatrhythmSettings::Render4k ? 1 : 0;
     default: return 0;
     }
 }
@@ -431,6 +432,9 @@ extern "C" void theatrhythm_display_set(int setting, int value) {
         break;
     case THEATRHYTHM_DISPLAY_VSYNC: s.vsync = value != 0; break;
     case THEATRHYTHM_DISPLAY_FPS_LIMIT: s.fps_limit = value; break;
+    case THEATRHYTHM_DISPLAY_RENDER_4K:
+        s.render_resolution = value ? TheatrhythmSettings::Render4k : TheatrhythmSettings::Render1080p;
+        break;
     default: return;
     }
 }

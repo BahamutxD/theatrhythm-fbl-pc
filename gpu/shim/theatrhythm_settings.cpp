@@ -65,6 +65,13 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         if (found == std::end(ButtonIconKeys) && !value.empty()) {
             std::printf("Settings: button_icons=%s is not auto, ps4, xbox or keyboard; using auto\n", value.c_str());
         }
+    } else if (key == "render_resolution") {
+        std::string lower;
+        for (const char c : value) lower += char(std::tolower(static_cast<unsigned char>(c)));
+        v.startup_render_resolution = v.render_resolution = lower == "1080p" ? Render1080p : Render4k;
+        if (!lower.empty() && lower != "1080p" && lower != "4k" && lower != "2160p") {
+            std::printf("Settings: render_resolution=%s is not 1080p or 4k; using 4k\n", value.c_str());
+        }
     } else {
         std::printf("Settings: unknown key %s\n", key.c_str());
     }
@@ -102,7 +109,7 @@ void Load() {
         {"THEATRHYTHM_AUDIO_VOLUME", "master_volume"}, {"THEATRHYTHM_AUDIO_CHANNELS", "audio_channels"},
         {"THEATRHYTHM_MENU_CONFIRM_SWAP", "menu_confirm_swap"},
         {"THEATRHYTHM_PAD_MAP", "pad_map"},       {"THEATRHYTHM_KEY_MAP", "key_map"},
-        {"THEATRHYTHM_BUTTON_ICONS", "button_icons"},
+        {"THEATRHYTHM_BUTTON_ICONS", "button_icons"}, {"THEATRHYTHM_RENDER_RESOLUTION", "render_resolution"},
     };
     for (const auto& [env, key] : env_keys) {
         if (const char* value = std::getenv(env); value && value[0]) {
@@ -125,6 +132,7 @@ void SaveDisplay() {
         {"fps_limit", std::to_string(v.fps_limit.load())},
         {"frames_queued", std::to_string(v.frames_queued.load())},
         {"anisotropy", std::to_string(v.anisotropy.load())},
+        {"render_resolution", std::string(RenderResolutionKeys[std::clamp(v.render_resolution.load(), 0, RenderResolutionCount - 1)])},
     };
     std::vector<std::string> lines;
     if (FILE* file = std::fopen(Path(), "r")) {
@@ -163,4 +171,8 @@ extern "C" int theatrhythm_gpu_menu_confirm_swap(void) {
 
 extern "C" const char* theatrhythm_button_icons(void) {
     return TheatrhythmSettings::ButtonIconKeys[TheatrhythmSettings::Get().button_icons].data();
+}
+
+extern "C" int theatrhythm_render_4k(void) {
+    return TheatrhythmSettings::Get().startup_render_resolution == TheatrhythmSettings::Render4k;
 }

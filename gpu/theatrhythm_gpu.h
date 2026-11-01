@@ -45,7 +45,9 @@ int theatrhythm_display_settings_is_open(void);
  * mode 0 windowed, 1 borderless, 2 fullscreen; resolution: index into the sizes, largest first;
  * VSync 0/1; frame rate limit in FPS, 0 none). set applies at once (the window follows on its next
  * event poll). resolution: the count of sizes, and size `index` when it exists. save: settings.ini. */
-enum { THEATRHYTHM_DISPLAY_MODE, THEATRHYTHM_DISPLAY_RESOLUTION, THEATRHYTHM_DISPLAY_VSYNC, THEATRHYTHM_DISPLAY_FPS_LIMIT };
+/* THEATRHYTHM_DISPLAY_RENDER_4K: render_resolution for the next start, 1 for 4k. */
+enum { THEATRHYTHM_DISPLAY_MODE, THEATRHYTHM_DISPLAY_RESOLUTION, THEATRHYTHM_DISPLAY_VSYNC, THEATRHYTHM_DISPLAY_FPS_LIMIT,
+       THEATRHYTHM_DISPLAY_RENDER_4K };
 int theatrhythm_display_get(int setting);
 void theatrhythm_display_set(int setting, int value);
 int theatrhythm_display_resolution(int index, int *width, int *height);
@@ -60,6 +62,9 @@ int theatrhythm_gpu_menu_confirm_swap(void);
 /* Button icon set (settings.ini button_icons, THEATRHYTHM_BUTTON_ICONS): "auto" (the device last
  * used), "ps4" (the game's own), "xbox" or "keyboard". Valid once theatrhythm_gpu_init returned. */
 const char *theatrhythm_button_icons(void);
+/* 1 when settings.ini render_resolution (THEATRHYTHM_RENDER_RESOLUTION) is 4k: the game runs in PS4
+ * Pro mode with a 3840x2160 video out. Valid once theatrhythm_gpu_init returned. */
+int theatrhythm_render_4k(void);
 /* sceCommonDialogInitialize ran (runtime_services.c): the upstream dialog libraries check it. */
 void theatrhythm_gpu_common_dialog_initialized(void);
 /* Master volume of the game's audio (settings.ini master_volume), 0 to 200 percent (100: the

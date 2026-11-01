@@ -33,12 +33,30 @@ vec3 degamma(vec3 rgb) {
     );
 }
 
+vec4 fetch(vec2 at) {
+    vec4 c = texture(texSampler, at);
+    if (pp.srgb_input && !pp.hdr) c.rgb = degamma(c.rgb);
+    return c;
+}
+
+// theatrhythm: a frame larger than the output (render_resolution=4k on a smaller screen) is
+// filtered down over each output pixel's whole footprint: a grid of up to 4x4 bilinear taps spread
+// across it, averaged in linear light. One bilinear tap reads only 2x2 texels, so at 4K -> 1440p
+// (1.5 texels per pixel) it skipped texels and edges shimmered. At or below 1:1 it is one tap.
 void main() {
-    vec4 color_linear = texture(texSampler, uv);
+    vec2 footprint = fwidth(uv) * vec2(textureSize(texSampler, 0));
+    ivec2 taps = ivec2(clamp(ceil(footprint - 0.01), vec2(1.0), vec2(4.0)));
+    vec2 step_uv = fwidth(uv) / vec2(taps);
+    vec4 color_linear = vec4(0.0);
+    for (int y = 0; y < taps.y; ++y) {
+        for (int x = 0; x < taps.x; ++x) {
+            color_linear += fetch(uv + (vec2(x, y) + 0.5 - vec2(taps) * 0.5) * step_uv);
+        }
+    }
+    color_linear /= float(taps.x * taps.y);
     if (pp.hdr) {
         color = color_linear;
     } else {
-        if (pp.srgb_input) color_linear.rgb = degamma(color_linear.rgb);
         color = vec4(gamma(color_linear.rgb), color_linear.a);
     }
 }

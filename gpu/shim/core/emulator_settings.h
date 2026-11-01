@@ -10,6 +10,8 @@
 
 u32 TheatrhythmDisplayRefreshHz(); // theatrhythm_gpu.cpp: primary display refresh rate, 60 when unknown
 double TheatrhythmWindowRefreshRate(); // theatrhythm_gpu.cpp: exact rate of the window's display, 0 when unknown
+extern "C" int theatrhythm_render_4k(void); // theatrhythm_settings.cpp: render_resolution=4k
+inline bool TheatrhythmRender4k() { return theatrhythm_render_4k() != 0; }
 
 enum GpuReadbacksMode : int { Disabled, Relaxed, Precise };
 
@@ -25,8 +27,9 @@ public:
         return v ? std::strtol(v, nullptr, 10) : fallback;
     }
     s32 GetGpuId() { static const auto value = s32(Number("THEATRHYTHM_GPU_ID", -1)); return value; }
-    u32 GetInternalScreenWidth() { static const auto value = u32(Number("THEATRHYTHM_INTERNAL_WIDTH", 1920)); return value; }
-    u32 GetInternalScreenHeight() { static const auto value = u32(Number("THEATRHYTHM_INTERNAL_HEIGHT", 1080)); return value; }
+    // theatrhythm: the video out size, 3840x2160 with render_resolution=4k (theatrhythm_render_4k).
+    u32 GetInternalScreenWidth() { static const auto value = u32(Number("THEATRHYTHM_INTERNAL_WIDTH", TheatrhythmRender4k() ? 3840 : 1920)); return value; }
+    u32 GetInternalScreenHeight() { static const auto value = u32(Number("THEATRHYTHM_INTERNAL_HEIGHT", TheatrhythmRender4k() ? 2160 : 1080)); return value; }
     // theatrhythm: Relaxed by default: without readbacks, guest code that reads GPU-written
     // vertices sees stale data; Relaxed costs no measurable frame rate.
     u32 GetReadbacksMode() { static const auto value = u32(Number("THEATRHYTHM_READBACKS", GpuReadbacksMode::Relaxed)); return value; }

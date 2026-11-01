@@ -41,6 +41,7 @@ public:
     bool IsActive();
     u64 CurrentTime();
     bool SetLooping(bool is_looping);
+    bool JumpToTime(u64 time); // theatrhythm: acknowledges the jump (see avplayer_state.cpp)
 
 private:
     // Event Replacement

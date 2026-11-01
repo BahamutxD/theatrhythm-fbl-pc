@@ -619,24 +619,53 @@ static void context_to_guest(const CONTEXT *c,GuestMcontext *m) {
     m->rdx=c->Rdx; m->rax=c->Rax; m->rcx=c->Rcx; m->rsp=c->Rsp; m->rip=c->Rip;
     m->rflags=c->EFlags; m->fs=c->SegFs; m->gs=c->SegGs;
 }
+/* Windows builds an APC's frame right below the thread's stack pointer, over the 128-byte red zone
+ * below rsp where SysV leaf functions keep locals. A thread interrupted in guest code is first moved
+ * to redzone_resume with rsp at RESUME_GAP below its own, its rip and rsp in the two slots there
+ * (below the red zone), so the APC runs below them; redzone_resume then puts rsp back and jumps to
+ * the rip slot, changing no register or flag. */
+#define RESUME_GAP 144
+void redzone_resume(void), redzone_resume_jump(void);
+__asm__(".text\n.globl redzone_resume\nredzone_resume:\n"
+        " mov 8(%rsp),%rsp\n"
+        ".globl redzone_resume_jump\nredzone_resume_jump:\n"
+        " jmp *-144(%rsp)\n");
+/* A thread stopped inside redzone_resume: the rip and rsp it is on its way back to. */
+static void leave_resume(CONTEXT *c) {
+    if (c->Rip==(DWORD64)(uintptr_t)redzone_resume) {
+        const uint64_t *slot=(const uint64_t *)(uintptr_t)c->Rsp;
+        c->Rip=slot[0]; c->Rsp=slot[1];
+    } else if (c->Rip==(DWORD64)(uintptr_t)redzone_resume_jump) {
+        c->Rip=*(const uint64_t *)(uintptr_t)(c->Rsp-RESUME_GAP);
+    }
+}
 /* APC path: runs on the interrupted thread, below its stack pointer; the reported stack pointer
- * is this frame's context copy, and registers the handler changes are written back on return. */
+ * is this frame's context copy, and registers the handler changes are written back on return. A
+ * thread at redzone_resume reports and takes back its rip and rsp through the slots. */
 static void deliver_exception(void *signal,void *unused1,void *unused2,CONTEXT *c) {
     (void)unused1; (void)unused2;
     int32_t signum=(int32_t)(intptr_t)signal;
     ExceptionHandler handler=__atomic_load_n(&exception_handlers[signum-1],__ATOMIC_ACQUIRE);
     if (!handler || !c) return;
+    uint64_t *resume=c->Rip==(DWORD64)(uintptr_t)redzone_resume ? (uint64_t *)(uintptr_t)c->Rsp : NULL;
     GuestUcontext u={0};
     GuestMcontext *m=&u.mc;
     context_to_guest(c,m);
+    if (resume) m->rip=resume[0];
     const uint64_t reported=(uint64_t)(uintptr_t)&u;
     m->rsp=reported;
     __atomic_add_fetch(&exceptions_entered,1,__ATOMIC_RELAXED);
     handler(signum,&u);
     c->R8=m->r8; c->R9=m->r9; c->R10=m->r10; c->R11=m->r11; c->R12=m->r12; c->R13=m->r13;
     c->R14=m->r14; c->R15=m->r15; c->Rdi=m->rdi; c->Rsi=m->rsi; c->Rbp=m->rbp; c->Rbx=m->rbx;
-    c->Rdx=m->rdx; c->Rax=m->rax; c->Rcx=m->rcx; c->Rip=m->rip;
-    if (m->rsp!=reported) c->Rsp=m->rsp;
+    c->Rdx=m->rdx; c->Rax=m->rax; c->Rcx=m->rcx;
+    if (resume) {
+        resume[0]=m->rip;
+        if (m->rsp!=reported) resume[1]=m->rsp;
+    } else {
+        c->Rip=m->rip;
+        if (m->rsp!=reported) c->Rsp=m->rsp;
+    }
     __atomic_add_fetch(&exceptions_delivered,1,__ATOMIC_RELAXED);
 }
 /* Proxy path: the target is suspended in a system call. Its registers are copied below its red
@@ -694,7 +723,15 @@ static ABI int32_t raise_exception(GuestThread *t,int32_t signum) {
         __atomic_add_fetch(&raised_proxy,1,__ATOMIC_RELAXED);
         return 0;
     }
+    /* Running code: the APC is delivered as it resumes, at redzone_resume below its red zone. */
+    leave_resume(&x->c);
+    uint64_t *slot=(uint64_t *)(uintptr_t)(x->c.Rsp-RESUME_GAP);
+    slot[0]=x->c.Rip; slot[1]=x->c.Rsp;
+    x->c.Rip=(DWORD64)(uintptr_t)redzone_resume; x->c.Rsp=(DWORD64)(uintptr_t)slot;
+    x->c.ContextFlags=CONTEXT_CONTROL;
+    const BOOL moved=SetThreadContext(h,&x->c);
     free(x);
+    if (!moved) { ResumeThread(h); return ERR(3); }
     __atomic_add_fetch(&raised_apc,1,__ATOMIC_RELAXED);
     LONG r=queue(h,1,deliver_exception,(void *)(intptr_t)signum,NULL,NULL);
     ResumeThread(h);

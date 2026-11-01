@@ -88,8 +88,13 @@ frame limit, audio volume and speaker layout, vibration, the dialog confirm butt
 remapping, each with a comment explaining it.
 
 In the game, **Options > Display Settings** (an extra button below Streaming Rules) changes the
-window mode, resolution, vsync and frame rate limit. Changes apply at once and are saved to
-`settings.ini` when you leave the page.
+window mode, resolution, vsync, frame rate limit and render resolution. Changes apply at once and
+are saved to `settings.ini` when you leave the page.
+
+**Render resolution** is 4K by default (`render_resolution=4k` in `settings.ini`): the game renders at
+3840x2160, as on a PS4 Pro, and the picture is filtered down to your screen (the desktop resolution,
+as the game opens borderless by default), so it's sharper on any screen. On a weaker GPU set it to
+1080p, as on a PS4. It applies the next time you start the game.
 
 ## Controls
 
