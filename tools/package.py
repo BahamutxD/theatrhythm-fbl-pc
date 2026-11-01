@@ -4,6 +4,12 @@
 
     python tools/package.py [--out dist] [--python EMBEDDABLE] [--zip] [--debug]
 
+On Linux the same folder holds theatrhythm-fbl and theatrhythm-setup (rpath $ORIGIN/lib), the
+shared libraries they need in lib/ (ldd, less the host's: glibc, libstdc++, Vulkan, the display
+and audio stacks, which must match its drivers), theatrhythm-fbl.png for the desktop entry and
+prepare/ without Python: the setup runs the system's python3. --zip writes <release>-linux.tar.gz
+(and -symbols, -debug), which keeps the files' exec bits. Needs ldd, patchelf and strip.
+
 The folder is what a player unpacks: they need neither this repo nor MSYS2. They run
 theatrhythm-setup.exe, which prepares the game image from their own dump (prepare/run.py), and then
 start theatrhythm-fbl.exe or the desktop shortcut it offers.
@@ -29,15 +35,26 @@ game/: it is built from a player's own dump.
 import argparse
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import time
 import zipfile
 
 PORT = Path(__file__).resolve().parent.parent
-EXES = ('theatrhythm-fbl.exe', 'theatrhythm-setup.exe')
+LINUX = sys.platform.startswith('linux')
+EXES = ('theatrhythm-fbl', 'theatrhythm-setup') if LINUX else ('theatrhythm-fbl.exe', 'theatrhythm-setup.exe')
+# Linux libraries the host provides: bundled, they break its GPU drivers, display connection or audio
+# (libstdc++ too: Mesa needs the one it was built with, at least as new as this build's).
+HOST_LIBS = re.compile(r'^(linux-vdso|ld-linux.*|libc|libm|libdl|librt|libpthread|libresolv|libutil|libnsl|libanl'
+                       r'|libstdc\+\+|libgcc_s|libvulkan|libGL|libGLX|libGLdispatch|libEGL|libOpenGL|libgbm|libdrm.*'
+                       r'|libX11|libX11-xcb|libxcb.*|libXau|libXdmcp|libXext|libXfixes|libXrender|libXi|libXcursor'
+                       r'|libXrandr|libwayland-.*|libasound|libudev|libpulse.*|libfontconfig|libfreetype'
+                       r'|libnvidia-.*|libcuda|libz)\.so')
+ICON = PORT / 'packaging' / 'windows' / 'theatrhythm-fbl.ico'
 # What prepare/run.py needs: the scripts, the assets they read and the template of settings.ini.
 PREPARE_FILES = ['run.py', 'settings.example.ini', *sorted(f'scripts/{p.name}' for p in (PORT / 'scripts').glob('*.py')),
                  *sorted(f'assets/button_icons/{p.name}' for p in (PORT / 'assets' / 'button_icons').glob('*.bc7')),
@@ -66,6 +83,30 @@ theatrhythm.log, in the log folder of your save folder. Shader caches are kept p
 Needs Windows 10/11 x64, a CPU with AVX and a GPU with Vulkan 1.3.{python_note}
 Source and license (GPL-2.0-or-later): see LICENSE.txt.
 {debug_note}"""
+LINUX_README = """Theatrhythm Final Bar Line on PC (Linux)
+Release {release}
+
+You need a decrypted dump of your own copy of the game (PS4, version 1.00): the folder with
+eboot.bin, sce_module, sce_sys and Media. No game files are included.
+
+1. Run theatrhythm-setup (from a file manager, or ./theatrhythm-setup in a terminal). Pick the
+   game folder and where your saves go. It prepares the game from your dump (a few seconds) and
+   offers an entry in your application menu (Steam's "Add a Non-Steam Game" lists it too).
+   From a terminal it also takes: ./theatrhythm-setup --game <dump> [--save <folder>]
+2. Start the game from the menu entry, or run ./theatrhythm-fbl.
+
+Run theatrhythm-setup again to change the game or save folder. After unpacking a newer release
+over this folder, run it once more: it keeps your folders and settings.
+
+settings.ini (made by the setup) holds the window, audio and control options; the in-game
+Options > Display Settings page changes the display ones. If the game stops, the reason is in
+theatrhythm.log, in the log folder of your save folder. Shader caches are kept per PC in
+~/.cache/theatrhythm-fbl.
+
+Needs Linux x86-64 with glibc 2.39 or newer (SteamOS 3.7, Ubuntu 24.04, Debian 13, Fedora 40 or
+newer), python3 3.10+ for the setup, a CPU with AVX and a GPU with a Vulkan 1.3 driver.
+Source and license (GPL-2.0-or-later): see LICENSE.txt.
+"""
 PYTHON_NOTE = '\nThe setup needs Python 3.10 or newer (python.org) to prepare the game.'
 DEBUG_NOTE = """
 This is a debugging build. To catch a rendering glitch, start the game with diagnose\\start.bat
@@ -130,6 +171,58 @@ def dll_closure(exe, bin_dir):
     return found
 
 
+def linux_tool(*names):
+    for name in names:
+        if (path := shutil.which(name)):
+            return path
+    raise SystemExit(f'Need {names[0]} (packaging/linux/ci-deps.sh installs it).')
+
+
+def so_closure(exes):
+    """The shared libraries `exes` load, theirs included (ldd lists them all), less the host's."""
+    found, missing = {}, []
+    for exe in exes:
+        listing = subprocess.run(['ldd', str(exe)], capture_output=True, text=True, check=True).stdout
+        for name, path in re.findall(r'^\s*(\S+)\s+=>\s+(\S+)', listing, re.MULTILINE):
+            if HOST_LIBS.match(name):
+                continue
+            if path == 'not':
+                missing.append(name)
+            else:
+                found[name] = Path(path)
+    if missing:
+        raise SystemExit(f'ldd cannot find {", ".join(sorted(set(missing)))}')
+    return [found[name] for name in sorted(found)]
+
+
+def set_rpath(path, rpath):
+    """Bundled libraries find each other through their own RUNPATH: the exe's applies to its direct
+    dependencies only."""
+    subprocess.run([linux_tool('patchelf'), '--set-rpath', rpath, str(path)], check=True)
+
+
+def min_glibc(paths):
+    """The newest GLIBC_ symbol version the files use: the oldest glibc they start on."""
+    objdump = shutil.which('objdump') or shutil.which('llvm-objdump-18')
+    if not objdump:
+        return None
+    versions = set()
+    for path in paths:
+        dump = subprocess.run([objdump, '-T', str(path)], capture_output=True, text=True).stdout
+        versions |= set(re.findall(r'GLIBC_(2\.[0-9.]+)', dump))
+    return max(versions, key=lambda v: tuple(map(int, v.split('.'))), default=None)
+
+
+def ico_png(ico, size=256):
+    """The PNG frame of `size` pixels in a .ico (the desktop entry's icon)."""
+    data = ico.read_bytes()
+    for i in range(struct.unpack_from('<H', data, 4)[0]):
+        width, _, _, _, _, _, length, offset = struct.unpack_from('<BBBBHHII', data, 6 + 16 * i)
+        if (width or 256) == size and data[offset:offset + 8] == b'\x89PNG\r\n\x1a\n':
+            return data[offset:offset + length]
+    raise SystemExit(f'{ico}: no {size}px PNG frame')
+
+
 def release_name():
     """theatrhythm-fbl-pc-<commit>-<date>, or -<commit>-dirty-<date>-<time> for uncommitted work:
     what release.txt and the zip are named after. Two releases from one dirty tree differ by the
@@ -146,11 +239,12 @@ def copy(source, target):
     shutil.copy2(source, target)
 
 
-def strip(source, target, bin_dir):
+def strip(source, target, bin_dir, mode='--strip-all'):
     """Copies an exe without its debug info (RelWithDebInfo DWARF is ~95% of theatrhythm-fbl.exe).
     Crash logs give exe+offset, which the unstripped build resolves."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run([str(bin_dir / 'llvm-strip.exe'), '--strip-all', '-o', str(target), str(source)], check=True)
+    tool = linux_tool('llvm-strip-18', 'llvm-strip', 'strip') if LINUX else str(bin_dir / 'llvm-strip.exe')
+    subprocess.run([tool, mode, '-o', str(target), str(source)], check=True)
 
 
 def embeddable_python(source, target):
@@ -178,6 +272,8 @@ def main():
     p.add_argument('--zip', action='store_true', help='also write out/<release>.zip (and <release>-symbols.zip)')
     p.add_argument('--debug', action='store_true', help='keep debug info in the exes and ship the diagnose/ kit')
     a = p.parse_args()
+    if LINUX and a.python:
+        raise SystemExit('--python is the Windows embeddable package; on Linux the setup runs the system python3.')
     for exe in EXES:
         if not (PORT / 'out' / exe).is_file():
             raise SystemExit(f'out/{exe} not found: build first (bash build.sh).')
@@ -196,19 +292,39 @@ def main():
         else:
             strip(PORT / 'out' / exe, out / exe, bin_dir)
             shipped.append(exe)
-    # The kit's own files come and go with --debug; its captures and log stay.
-    for bat in sorted(DIAGNOSE.glob('*.bat')):
-        if a.debug:
-            ship(bat, f'diagnose/{bat.name}')
-        else:
-            (out / 'diagnose' / bat.name).unlink(missing_ok=True)
-    dlls = dll_closure(PORT / 'out' / EXES[0], bin_dir)
-    wanted = {dll.name.lower() for dll in dlls}
-    for old in out.glob('*.dll'):
-        if old.name.lower() not in wanted:
-            old.unlink()
-    for dll in dlls:
-        ship(dll, dll.name)
+        if LINUX:
+            set_rpath(out / exe, '$ORIGIN/lib')
+    if LINUX:
+        libs = so_closure([PORT / 'out' / exe for exe in EXES])
+        wanted = {lib.name for lib in libs}
+        for old in (out / 'lib').glob('*') if (out / 'lib').is_dir() else ():
+            if old.name not in wanted:
+                old.unlink()
+        for lib in libs:
+            target = out / 'lib' / lib.name
+            if a.debug:
+                copy(lib, target)
+            else:
+                strip(lib, target, bin_dir, '--strip-unneeded')
+            set_rpath(target, '$ORIGIN')
+            shipped.append(f'lib/{lib.name}')
+        (out / 'theatrhythm-fbl.png').write_bytes(ico_png(ICON))
+        shipped.append('theatrhythm-fbl.png')
+        dlls = libs
+    else:
+        # The kit's own files come and go with --debug; its captures and log stay.
+        for bat in sorted(DIAGNOSE.glob('*.bat')):
+            if a.debug:
+                ship(bat, f'diagnose/{bat.name}')
+            else:
+                (out / 'diagnose' / bat.name).unlink(missing_ok=True)
+        dlls = dll_closure(PORT / 'out' / EXES[0], bin_dir)
+        wanted = {dll.name.lower() for dll in dlls}
+        for old in out.glob('*.dll'):
+            if old.name.lower() not in wanted:
+                old.unlink()
+        for dll in dlls:
+            ship(dll, dll.name)
 
     prepare = out / 'prepare'
     python = prepare / 'python'
@@ -223,16 +339,37 @@ def main():
         shipped += [str(f.relative_to(out)).replace('\\', '/') for f in sorted(python.rglob('*')) if f.is_file()]
 
     (out / 'release.txt').write_bytes(f'{release}\n'.encode())
-    (out / 'README.txt').write_bytes(README.format(release=release, python_note='' if python.is_dir() else PYTHON_NOTE,
-                                                   debug_note=DEBUG_NOTE if a.debug else '')
-                                     .replace('\n', '\r\n').encode())
+    if LINUX:
+        (out / 'README.txt').write_bytes(LINUX_README.format(release=release).encode())
+    else:
+        (out / 'README.txt').write_bytes(README.format(release=release, python_note='' if python.is_dir() else PYTHON_NOTE,
+                                                       debug_note=DEBUG_NOTE if a.debug else '')
+                                         .replace('\n', '\r\n').encode())
     ship(PORT / 'LICENSE', 'LICENSE.txt')
     shipped += ['release.txt', 'README.txt']
     size = sum((out / name).stat().st_size for name in shipped)
-    print(f'{out}: {release}{" (debug)" if a.debug else ""}, {len(dlls)} DLLs, {len(shipped)} files, {size / 2**20:.0f} MiB'
-          + ('' if python.is_dir() else ' (no Python: the player needs Python 3.10+)'))
+    if LINUX:
+        glibc = min_glibc([out / name for name in shipped if name in EXES or name.startswith('lib/')])
+        print(f'{out}: {release}{" (debug)" if a.debug else ""}, {len(dlls)} libraries, {len(shipped)} files, '
+              f'{size / 2**20:.0f} MiB, needs glibc {glibc or "?"}')
+    else:
+        print(f'{out}: {release}{" (debug)" if a.debug else ""}, {len(dlls)} DLLs, {len(shipped)} files, {size / 2**20:.0f} MiB'
+              + ('' if python.is_dir() else ' (no Python: the player needs Python 3.10+)'))
 
-    if a.zip:
+    if a.zip and LINUX:
+        # tar keeps the exec bits a zip would lose.
+        archive = PORT / 'out' / f'{release}-linux{"-debug" if a.debug else ""}.tar.gz'
+        with tarfile.open(archive, 'w:gz', compresslevel=9) as t:
+            for name in sorted(shipped):
+                t.add(out / name, f'{release}/{name}')
+        print(f'{archive}: {archive.stat().st_size / 2**20:.0f} MiB')
+        if not a.debug:
+            symbols = PORT / 'out' / f'{release}-linux-symbols.tar.gz'
+            with tarfile.open(symbols, 'w:gz', compresslevel=9) as t:
+                for exe in EXES:
+                    t.add(PORT / 'out' / exe, exe)
+            print(f'{symbols}: {symbols.stat().st_size / 2**20:.0f} MiB (not for players)')
+    elif a.zip:
         archive = PORT / 'out' / f'{release}{"-debug" if a.debug else ""}.zip'
         with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
             for name in sorted(shipped):

@@ -9,8 +9,8 @@
   <a href="https://github.com/YAPhoa/theatrhythm-fbl-pc/releases/latest"><b>Download the latest release</b></a>
 </p>
 
-It runs the game's own code natively on Windows, with a Vulkan renderer, keyboard and gamepad
-controls, and display settings of its own. **No game files are included:** you need a decrypted
+It runs the game's own code natively on Windows and Linux, with a Vulkan renderer, keyboard and
+gamepad controls, and display settings of its own. **No game files are included:** you need a decrypted
 dump of your own copy of the game (PS4, version 1.00).
 
 ## Features
@@ -18,7 +18,8 @@ dump of your own copy of the game (PS4, version 1.00).
 - **PC display settings:** windowed, borderless or fullscreen, at your desktop's resolution.
 - **Keyboard and controller:** Xbox-style mapping for controllers, with the game's button hints
   redrawn for keyboard and Xbox. DualSense works too.
-- **Easy setup:** point the installer at your dump, and it can add a desktop shortcut.
+- **Easy setup:** point the installer at your dump, and it can add a desktop shortcut (on Linux,
+  an application menu entry).
 
 ## Supported languages
 
@@ -37,18 +38,21 @@ one played most with this runner so far.
 
 ## Download
 
-Download `theatrhythm-fbl-pc-<version>.zip` from the
-[latest release](https://github.com/YAPhoa/theatrhythm-fbl-pc/releases/latest).
+From the [latest release](https://github.com/YAPhoa/theatrhythm-fbl-pc/releases/latest):
+
+- **Windows:** `theatrhythm-fbl-pc-<version>.zip`
+- **Linux:** `theatrhythm-fbl-pc-<version>-linux.tar.gz`
 
 ## Requirements
 
-- Windows 10 or 11, 64-bit
+- **Windows:** Windows 10 or 11, 64-bit. Python and other tools come with the release: you don't
+  need to install anything else.
+- **Linux:** x86-64 with glibc 2.39 or newer (SteamOS 3.7, Ubuntu 24.04, Debian 13, Fedora 40 or
+  newer, Arch) and Python 3.10 or newer (`python3`, which most distributions have) for the setup.
 - A CPU with AVX
-- A GPU with Vulkan 1.3 and an up-to-date driver
+- A GPU with Vulkan 1.3 and an up-to-date driver (on Linux, Mesa or the NVIDIA driver)
 - A decrypted dump of your own copy of the game: the folder with `eboot.bin`, `sce_module`,
   `sce_sys` and `Media`
-
-Python and other tools come with the release: you don't need to install anything else.
 
 ### Tested on
 
@@ -64,6 +68,10 @@ a much more modest PC should play it fine: any reasonably recent CPU with AVX an
 current Vulkan 1.3 driver. Lower-end machines haven't been tested yet, so if yours works (or
 doesn't), please say so in an [issue](https://github.com/YAPhoa/theatrhythm-fbl-pc/issues).
 
+The Linux version is new: it has been run on Ubuntu 24.04 in WSL (software rendering, from setup
+to the game's first screen) and checked on Ubuntu, Debian, Fedora and Arch, but not yet played on a
+Linux PC with its own GPU or on a Steam Deck. If you try it there, please report how it goes.
+
 ## Install and play
 
 1. Unzip the release anywhere, for example `C:\Games\Theatrhythm`.
@@ -76,10 +84,24 @@ doesn't), please say so in an [issue](https://github.com/YAPhoa/theatrhythm-fbl-
 Run `theatrhythm-setup.exe` again any time to change the game or save folder. It offers to copy your
 saves when the save folder moves.
 
+### On Linux
+
+1. Extract the release anywhere you can write, for example `~/Games/Theatrhythm`:
+   `tar -xzf theatrhythm-fbl-pc-<version>-linux.tar.gz -C ~/Games`
+2. Run `theatrhythm-setup`: open it from your file manager and it asks with dialogs, or run
+   `./theatrhythm-setup` in a terminal and it asks there. It also takes
+   `--game <dump> [--save <folder>]` on the command line.
+3. Pick your **game folder** (the dump) and keep or change the **save folder**. Setup prepares the
+   game in a few seconds and offers an entry in your application menu.
+4. Start the game from the menu entry, or run `./theatrhythm-fbl`.
+
+On a Steam Deck, do this in Desktop Mode; then *Add a Non-Steam Game* in Steam lists the menu entry.
+Shader caches are kept in `~/.cache/theatrhythm-fbl`.
+
 ### Updating
 
-Unzip the new release over the old folder, then run `theatrhythm-setup.exe` once more (the game
-asks you to). Your folders, saves and settings are kept.
+Unzip (on Linux, extract) the new release over the old folder, then run the setup once more (the
+game asks you to). Your folders, saves and settings are kept.
 
 ## Settings
 

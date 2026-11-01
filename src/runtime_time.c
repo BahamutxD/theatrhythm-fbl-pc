@@ -1,5 +1,7 @@
 /* Explicit guest timeval layout; host pointers never escape this boundary. */
+#ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
+#endif
 #include "runtime.h"
 #include <stdio.h>
 #include <stdlib.h>

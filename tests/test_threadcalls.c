@@ -4,6 +4,8 @@
 
 void *runtime_low_alloc(size_t size) { return calloc(1, size); }
 void runtime_low_free(void *pointer) { free(pointer); }
+/* Linux guest stacks: none low here, so pthreads places them. */
+void *runtime_low_map(size_t size, int prot) { (void)size; (void)prot; return NULL; }
 void runtime_thread_keys_cleanup(void) {}
 int runtime_verbose(void) { return 0; }
 
@@ -40,20 +42,31 @@ static void *ABI blocker(void *arg) {
     pthread_mutex_unlock(&block_lock);
     return NULL;
 }
-/* A SysV leaf loop with 16 words of pattern in its red zone (the 128 bytes below rsp), checked until
- * redzone_stop is set: returns NULL while they hold, 1 once one changed. */
+/* A SysV leaf loop with 16 words of pattern in its red zone (the 128 bytes below rsp) and in r8-r11
+ * and xmm0 (caller-saved: a handler may change them), checked until redzone_stop is set: returns
+ * NULL while they hold, 1 once one changed. */
 volatile int redzone_stop, redzone_ready;
 void *ABI redzone_spinner(void *arg);
 __asm__(".text\n.globl redzone_spinner\nredzone_spinner:\n"
         " movabs $0x5a5a5a5a00000000,%rax\n xor %ecx,%ecx\n"
         "1: lea (%rax,%rcx),%rdx\n mov %rdx,-128(%rsp,%rcx,8)\n inc %ecx\n cmp $16,%ecx\n jb 1b\n"
+        " lea 16(%rax),%r8\n lea 17(%rax),%r9\n lea 18(%rax),%r10\n lea 19(%rax),%r11\n movq %rax,%xmm0\n"
         " movl $1,redzone_ready(%rip)\n"
         "2: xor %ecx,%ecx\n"
         "3: lea (%rax,%rcx),%rdx\n cmp %rdx,-128(%rsp,%rcx,8)\n jne 4f\n inc %ecx\n cmp $16,%ecx\n jb 3b\n"
+        " lea 16(%rax),%rdx\n cmp %rdx,%r8\n jne 4f\n lea 17(%rax),%rdx\n cmp %rdx,%r9\n jne 4f\n"
+        " lea 18(%rax),%rdx\n cmp %rdx,%r10\n jne 4f\n lea 19(%rax),%rdx\n cmp %rdx,%r11\n jne 4f\n"
+        " movq %xmm0,%rdx\n cmp %rax,%rdx\n jne 4f\n"
         " cmpl $0,redzone_stop(%rip)\n je 2b\n xor %eax,%eax\n ret\n"
         "4: mov $1,%eax\n ret\n");
 static void ABI on_exception(int32_t signum,GuestUcontext *u) {
     if (signum==30) { handled_sp=*(uint64_t *)((char *)u+0xf8); handled_on=runtime_thread_current(); }
+}
+/* A handler that uses the caller-saved registers, as compiled guest code may. */
+static void ABI clobbering_exception(int32_t signum,GuestUcontext *u) {
+    __asm__ volatile("mov $-1,%%r8\n mov $-1,%%r9\n mov $-1,%%r10\n mov $-1,%%r11\n pcmpeqd %%xmm0,%%xmm0"
+                     ::: "r8","r9","r10","r11","xmm0","cc");
+    on_exception(signum,u);
 }
 
 /* pthread_cleanup_push/pop: pop(1) runs the innermost handler, pthread_exit the rest. */
@@ -151,20 +164,28 @@ int main(void) {
     pthread_mutex_lock(&block_lock); block_release = 1; pthread_cond_signal(&block_wake); pthread_mutex_unlock(&block_lock);
     for (int i = 0; i < 2000 && !__atomic_load_n(&t->finished, __ATOMIC_ACQUIRE); ++i) usleep(1000);
     assert(raise_exception(t, 30) == ERR(3) && attr_destroy(&detached) == 0);
-    assert(remove_exception_handler(30) == 0 && install_exception_handler(30, on_exception) == 0);
-    /* A thread interrupted in a leaf function keeps its red zone (the APC runs below it). */
+    assert(remove_exception_handler(30) == 0 && install_exception_handler(30, clobbering_exception) == 0);
+    /* Raised on the calling thread: handled before the raise returns. */
+    handled_on = NULL;
+    assert(raise_exception(self, 30) == 0 && handled_on == self && exceptions_delivered == 4);
+    /* A thread interrupted in a leaf function keeps its red zone and registers (the handler runs below). */
     assert(thread_create(&t, NULL, redzone_spinner, NULL, "redzone") == 0);
     while (!redzone_ready) {}
-    const uint64_t apc_before = raised_apc;
+    const uint64_t running_before = raised_running;
     for (int i = 0; i < 50; ++i) {
         const uint64_t delivered = exceptions_delivered;
         assert(raise_exception(t, 30) == 0);
         for (int w = 0; w < 2000 && exceptions_delivered == delivered; ++w) usleep(100);
         assert(exceptions_delivered == delivered + 1);
     }
+    /* Back to back, so raises land while the last delivery is still running (nested). */
+    const uint64_t burst = exceptions_delivered;
+    for (int i = 0; i < 50; ++i) assert(raise_exception(t, 30) == 0);
+    for (int w = 0; w < 20000 && exceptions_delivered < burst + 50; ++w) usleep(100);
+    assert(exceptions_delivered == burst + 50);
     redzone_stop = 1;
     void *clobbered = (void *)1;
-    assert(thread_join(t, &clobbered) == 0 && clobbered == NULL && raised_apc == apc_before + 50);
+    assert(thread_join(t, &clobbered) == 0 && clobbered == NULL && raised_running >= running_before + 50);
 
     assert(thread_create(&t, NULL, cleaner, NULL, "cleaner") == 0 && thread_join(t, NULL) == 0);
     assert(!strcmp(cleanup_log, "bca"));

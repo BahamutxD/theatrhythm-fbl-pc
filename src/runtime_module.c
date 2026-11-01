@@ -4,6 +4,7 @@
  * table index + 1 (0 is the eboot). */
 #include "runtime.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 #ifdef _WIN32

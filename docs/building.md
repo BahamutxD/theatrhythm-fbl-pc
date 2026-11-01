@@ -54,6 +54,25 @@ cd tests && python -m unittest discover -p "test_*.py"
 
 Tests that need the game dump or `iced-x86` skip themselves when those are missing.
 
+### Linux (not released yet)
+
+On Linux x86-64 the same commands build `out/theatrhythm-fbl` (linked without PIE: host pointers
+handed to the game must stay below 1 TiB) and `out/theatrhythm-setup`, and run the same tests.
+On Ubuntu 24.04 (also in WSL), `packaging/linux/ci-deps.sh` installs the dependencies as root,
+building Vulkan-Headers, VMA and SDL3, which 24.04 lacks or ships too old. Then:
+
+```bash
+CC=clang-18 CXX=clang++-18 bash build.sh --test
+```
+
+`python3 tools/package.py --zip` writes `out/<release>-linux.tar.gz` (also `-symbols`, and `-debug`
+with `--debug`): the two programs, the libraries they need in `lib/` less the host's (glibc,
+libstdc++, Vulkan, X11/Wayland, audio), and `prepare/` without Python, as the setup runs the
+system's python3. `packaging/linux/smoke-test.sh <unpacked release>` checks one as root on a fresh
+distro (libraries, the setup on non-dumps, the start from `paths.ini`); the `linux-smoke` CI job
+runs it on Ubuntu 24.04, Debian 13, Fedora 42 and Arch. In WSL the game runs on Mesa's software
+Vulkan (llvmpipe): slow, but enough for a boot check.
+
 ## 4. Run from the source tree
 
 Point `run.py` at your decrypted dump (PS4, version 1.00: `eboot.bin`, `sce_module`, `sce_sys`,
@@ -109,7 +128,8 @@ then sends the `diagnose` folder. The debug README.txt tells them so.
 ## 6. CI and releases
 
 Every push and pull request runs `.github/workflows/build.yml` on `windows-latest`: build, both test
-suites, then both packages with the pinned embeddable Python. The release, debug and symbols zips
+suites, then both packages with the pinned embeddable Python. The `linux` and `linux-smoke` jobs do
+the same for Linux on `ubuntu-24.04`; their tarballs are artifacts and are not published yet. The release, debug and symbols zips
 are the run's artifacts (Actions tab, kept 90 days). Pushing an annotated tag `v*` also publishes
 the release zip as a GitHub release, named after the tag:
 

@@ -31,7 +31,7 @@ int runtime_file_mount(const char *guest, const char *host) {
 }
 void runtime_file_unmount(const char *guest) { mounted[slot(guest)][0]=0; }
 
-static const char *dir="out/button-icons-test";
+static const char *dir="out/button-icons-scratch";
 static unsigned char sets[BUTTON_ICONS_SETS][TEXTURE_BYTES];
 static void write_file(const char *name, const void *data, size_t size) {
     char path[256]; snprintf(path,sizeof(path),"%s/%s",dir,name);

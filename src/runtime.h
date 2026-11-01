@@ -96,6 +96,9 @@ void runtime_thread_report(void);
 void runtime_thread_count_yield(int zero_sleep);
 void runtime_set_main_tls(const void *data, uint64_t filesz, uint64_t memsz, uint64_t align);
 void runtime_thread_attach_main(void);
+/* The stack the calling thread runs guest code on, when it is not the one the host gave it (Linux:
+ * the guest main stack below 1 TiB): scePthreadAttrGet reports it, and the IL2CPP collector scans it. */
+void runtime_thread_set_stack(void *low, uint64_t size);
 int32_t *runtime_errno(void);
 uintptr_t runtime_sema_resolve(const char *name);
 void runtime_sema_report(void);

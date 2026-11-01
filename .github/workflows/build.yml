@@ -1,6 +1,8 @@
 # Builds from source on Windows (MSYS2 CLANG64, as docs/building.md), runs the tests and packages
 # the release (stripped, what players get), its symbols and the debug release (diagnose/ kit) as the
-# run's artifacts. A v* tag publishes the release zip alone as a GitHub release.
+# run's artifacts. The linux job does the same for Linux; linux-smoke checks its release on other
+# distros. A v* tag then publishes the two player packages alone (Windows zip, Linux tarball) as a
+# GitHub release, once every job has passed.
 name: build
 
 on:
@@ -20,8 +22,8 @@ env:
 jobs:
   windows:
     runs-on: windows-latest
-    permissions:
-      contents: write
+    outputs:
+      release: ${{ steps.package.outputs.release }}
     defaults:
       run:
         shell: bash
@@ -60,10 +62,12 @@ jobs:
           echo "$PYTHON_EMBED_SHA256  $RUNNER_TEMP/python-embed.zip" | sha256sum -c -
 
       - name: Package
+        id: package
         run: |
           python tools/package.py --python "$RUNNER_TEMP/python-embed.zip" --zip
           python tools/package.py --python "$RUNNER_TEMP/python-embed.zip" --zip --debug --out dist-debug
           echo "RELEASE=$(cat dist/release.txt)" >> "$GITHUB_ENV"
+          echo "release=$(cat dist/release.txt)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -81,11 +85,106 @@ jobs:
           path: out/${{ env.RELEASE }}-symbols.zip
           compression-level: 0
 
-      - name: Publish the release (v* tags)
-        if: startsWith(github.ref, 'refs/tags/v')
+
+  # Linux: built on Ubuntu 24.04 so it starts on glibc 2.39 or newer (SteamOS, Fedora/Bazzite,
+  # Debian 13, Ubuntu 24.04+). The release, debug and symbols tarballs are the run's artifacts; not
+  # published with the tag yet.
+  linux:
+    runs-on: ubuntu-24.04
+    env:
+      SDL_AUDIO_DRIVER: dummy
+      CC: clang-18
+      CXX: clang++-18
+    outputs:
+      release: ${{ steps.package.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0 # git describe names the release
+
+      - name: Dependencies
+        run: bash packaging/linux/ci-deps.sh
+
+      - name: Build and run the runtime tests
+        run: bash build.sh --test
+
+      - name: Every compile error (failed build)
+        if: failure()
+        run: ninja -C out/gpu -k 0 theatrhythm-fbl theatrhythm-setup 2>&1 | grep -E -A4 'error:|undefined reference' | head -400
+
+      - name: Python tests
+        run: cd tests && python3 -m unittest discover -p "test_*.py"
+
+      - name: Package
+        id: package
+        run: |
+          python3 tools/package.py --zip
+          python3 tools/package.py --zip --debug --out dist-debug
+          echo "RELEASE=$(cat dist/release.txt)" >> "$GITHUB_ENV"
+          echo "release=$(cat dist/release.txt)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.RELEASE }}-linux
+          path: out/${{ env.RELEASE }}-linux.tar.gz
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.RELEASE }}-linux-debug
+          path: out/${{ env.RELEASE }}-linux-debug.tar.gz
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.RELEASE }}-linux-symbols
+          path: out/${{ env.RELEASE }}-linux-symbols.tar.gz
+          compression-level: 0
+
+  # The unpacked release on distros it was not built on: libraries, glibc, the setup and the
+  # paths.ini start (packaging/linux/smoke-test.sh; no game dump or GPU).
+  linux-smoke:
+    needs: linux
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # debian:13 has SteamOS 3.7's glibc (2.41), fedora:42 is Bazzite's base; ubuntu:24.04 without
+        # the build's packages.
+        image: ['ubuntu:24.04', 'debian:13', 'fedora:42', 'archlinux:latest']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.linux.outputs.release }}-linux
+          path: out
+      - name: ${{ matrix.image }}
+        run: |
+          mkdir -p unpacked && tar -xzf out/*-linux.tar.gz -C unpacked
+          docker run --rm -v "$PWD:/w" "${{ matrix.image }}" \
+            bash /w/packaging/linux/smoke-test.sh "/w/unpacked/${{ needs.linux.outputs.release }}"
+
+  # v* tags: the release, with what players download and nothing else (no symbols or debug builds).
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux, linux-smoke]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.windows.outputs.release }}
+          path: out
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.linux.outputs.release }}-linux
+          path: out
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          WINDOWS: ${{ needs.windows.outputs.release }}
+          LINUX: ${{ needs.linux.outputs.release }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
-            --notes "Unzip ${RELEASE}.zip, run theatrhythm-setup.exe and pick your game dump. See the README." \
-            "out/${RELEASE}.zip"
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
+            --notes "Windows: unzip ${WINDOWS}.zip and run theatrhythm-setup.exe. Linux: extract ${LINUX}-linux.tar.gz and run theatrhythm-setup. See the README." \
+            "out/${WINDOWS}.zip" "out/${LINUX}-linux.tar.gz"

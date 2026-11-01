@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "setup.h"
 
+#ifdef _WIN32
 #include <windows.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#else
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <cerrno>
+#include <cstdlib>
+#endif
 
 #include <cwctype>
 #include <fstream>
@@ -19,53 +27,47 @@ namespace {
 // What run.py reads from the dump to prepare the image (IMAGE_INPUTS), and the title's param.sfo.
 constexpr const wchar_t* kGameFiles[] = {
     L"eboot.bin",
-    L"sce_sys\\param.sfo",
-    L"sce_module\\libc.prx",
-    L"sce_module\\libSceFios2.prx",
-    L"Media\\Modules\\PS4Util.prx",
-    L"Media\\Modules\\Il2CppUserAssemblies.prx",
+    L"sce_sys/param.sfo",
+    L"sce_module/libc.prx",
+    L"sce_module/libSceFios2.prx",
+    L"Media/Modules/PS4Util.prx",
+    L"Media/Modules/Il2CppUserAssemblies.prx",
 };
-constexpr wchar_t kGameExe[] = L"theatrhythm-fbl.exe";
 constexpr wchar_t kIncomplete[] = L"\n\nThis folder is incomplete: unpack the whole release again.";
+#ifdef _WIN32
+constexpr wchar_t kSeparator[] = L"\\";
+constexpr char kNewline[] = "\r\n";
+#else
+constexpr wchar_t kSeparator[] = L"/";
+constexpr char kNewline[] = "\n";
+#endif
 
 [[noreturn]] void fail(std::wstring message) {
     throw Error{std::move(message)};
-}
-
-std::wstring widen(std::string_view s) {
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring w(n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
-    return w;
-}
-
-std::string narrow(std::wstring_view s) {
-    int n = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0, nullptr, nullptr);
-    std::string u(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), u.data(), n, nullptr, nullptr);
-    return u;
 }
 
 // Absolute and normalized, without a trailing separator.
 fs::path clean(const fs::path& p) {
     std::error_code ec;
     fs::path a = fs::absolute(p, ec).lexically_normal();
-    std::wstring s = a.wstring();
-    while (s.size() > 3 && (s.back() == L'\\' || s.back() == L'/'))
-        s.pop_back();
-    return s;
+    while (!a.has_filename() && a.has_relative_path())
+        a = a.parent_path();
+    return a;
 }
 
+// Windows paths are case-insensitive; Linux paths are not.
 std::wstring lower(std::wstring s) {
+#ifdef _WIN32
     for (wchar_t& c : s)
         c = static_cast<wchar_t>(std::towlower(c));
+#endif
     return s;
 }
 
 // `inner` is `outer` or a folder inside it.
 bool inside(const fs::path& inner, const fs::path& outer) {
-    std::wstring i = lower(clean(inner).wstring()), o = lower(clean(outer).wstring());
-    return i == o || i.rfind(o + L"\\", 0) == 0;
+    std::wstring i = lower(text(clean(inner))), o = lower(text(clean(outer)));
+    return i == o || i.rfind(o + kSeparator, 0) == 0;
 }
 
 std::wstring join(const std::vector<std::wstring>& items) {
@@ -78,7 +80,7 @@ std::wstring join(const std::vector<std::wstring>& items) {
 std::string read_text(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
     if (!f)
-        fail(L"cannot read " + p.wstring());
+        fail(L"cannot read " + text(p));
     return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
 }
 
@@ -86,11 +88,40 @@ void write_text(const fs::path& p, const std::string& text) {
     std::ofstream f(p, std::ios::binary | std::ios::trunc);
     f.write(text.data(), static_cast<std::streamsize>(text.size()));
     if (!f)
-        fail(L"cannot write " + p.wstring() + L"\nIf the game is running, close it and try again.");
+        fail(L"cannot write " + setup::text(p) + L"\nIf the game is running, close it and try again.");
 }
 
 // --- child processes ----------------------------------------------------------------------------
 
+// Passes each line of a child's output to `log` (and `output`, if given).
+class LineSink {
+public:
+    LineSink(const Log& log, std::wstring* output) : log_(log), output_(output) {}
+    void add(const char* bytes, size_t n) {
+        pending_.append(bytes, n);
+        for (size_t end; (end = pending_.find('\n')) != std::string::npos; pending_.erase(0, end + 1))
+            emit(std::string_view(pending_).substr(0, end));
+    }
+    void finish() {
+        if (!pending_.empty())
+            emit(pending_);
+    }
+
+private:
+    void emit(std::string_view bytes) {
+        std::wstring line = widen(bytes);
+        while (!line.empty() && line.back() == L'\r')
+            line.pop_back();
+        log_(L"  " + line);
+        if (output_)
+            *output_ += line + L"\n";
+    }
+    const Log& log_;
+    std::wstring* output_;
+    std::string pending_;
+};
+
+#ifdef _WIN32
 // One argument as CommandLineToArgvW reads it back.
 std::wstring quote(const std::wstring& arg) {
     if (!arg.empty() && arg.find_first_of(L" \t\"") == std::wstring::npos)
@@ -112,7 +143,7 @@ std::wstring quote(const std::wstring& arg) {
 
 // Runs `args` in `cwd` without a console window and passes each line it prints to `log`.
 // Returns the exit code; `output` (if given) collects the text.
-DWORD run(const std::vector<std::wstring>& args, const fs::path& cwd, const Log& log, std::wstring* output = nullptr) {
+unsigned long run(const std::vector<std::wstring>& args, const fs::path& cwd, const Log& log, std::wstring* output = nullptr) {
     std::wstring line;
     for (const std::wstring& a : args)
         line += (line.empty() ? L"" : L" ") + quote(a);
@@ -134,24 +165,12 @@ DWORD run(const std::vector<std::wstring>& args, const fs::path& cwd, const Log&
         CloseHandle(read);
         fail(L"cannot start " + line);
     }
-    auto emit = [&](std::string_view bytes) {
-        std::wstring text = widen(bytes);
-        while (!text.empty() && text.back() == L'\r')
-            text.pop_back();
-        log(L"  " + text);
-        if (output)
-            *output += text + L"\n";
-    };
-    std::string pending;
+    LineSink sink(log, output);
     char buf[4096];
     DWORD n;
-    while (ReadFile(read, buf, sizeof(buf), &n, nullptr) && n) {
-        pending.append(buf, n);
-        for (size_t end; (end = pending.find('\n')) != std::string::npos; pending.erase(0, end + 1))
-            emit(std::string_view(pending).substr(0, end));
-    }
-    if (!pending.empty())
-        emit(pending);
+    while (ReadFile(read, buf, sizeof(buf), &n, nullptr) && n)
+        sink.add(buf, n);
+    sink.finish();
     CloseHandle(read);
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 1;
@@ -180,6 +199,76 @@ std::vector<std::wstring> python_command(const fs::path& prepare) {
         return {python.wstring()};
     fail(L"Setup needs Python 3.10 or newer to prepare the game. Install it from python.org, then run setup again.");
 }
+#else
+// Runs `args` in `cwd` and passes each line it prints to `log`. Returns the exit code (128 + the
+// signal when it was killed); `output` (if given) collects the text.
+unsigned long run(const std::vector<std::wstring>& args, const fs::path& cwd, const Log& log, std::wstring* output = nullptr) {
+    std::vector<std::string> narrow_args;
+    for (const std::wstring& a : args)
+        narrow_args.push_back(narrow(a));
+    std::vector<char*> argv;
+    for (std::string& a : narrow_args)
+        argv.push_back(a.data());
+    argv.push_back(nullptr);
+    int fds[2];
+    if (pipe2(fds, O_CLOEXEC))
+        fail(L"cannot start " + args[0]);
+    pid_t pid = fork();
+    if (pid == 0) {
+        dup2(fds[1], STDOUT_FILENO);
+        dup2(fds[1], STDERR_FILENO);
+        if (!chdir(cwd.c_str()))
+            execvp(argv[0], argv.data());
+        _exit(127);
+    }
+    close(fds[1]);
+    if (pid < 0) {
+        close(fds[0]);
+        fail(L"cannot start " + args[0]);
+    }
+    LineSink sink(log, output);
+    char buf[4096];
+    for (ssize_t n; (n = read(fds[0], buf, sizeof(buf))) != 0;) {
+        if (n > 0)
+            sink.add(buf, static_cast<size_t>(n));
+        else if (errno != EINTR)
+            break;
+    }
+    sink.finish();
+    close(fds[0]);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+}
+
+fs::path search_path(const char* name) {
+    const char* path = std::getenv("PATH");
+    std::string_view dirs = path ? path : "/usr/local/bin:/usr/bin:/bin";
+    while (!dirs.empty()) {
+        size_t colon = dirs.find(':');
+        std::string_view dir = dirs.substr(0, colon);
+        dirs = colon == std::string_view::npos ? std::string_view() : dirs.substr(colon + 1);
+        fs::path candidate = fs::path(std::string(dir.empty() ? "." : dir)) / name;
+        if (!access(candidate.c_str(), X_OK))
+            return candidate;
+    }
+    return {};
+}
+
+// The Python that runs prepare/run.py: the release's own (prepare/python/bin/python3) if it has one,
+// else the system's python3.
+std::vector<std::wstring> python_command(const fs::path& prepare) {
+    std::error_code ec;
+    if (fs::path own = prepare / "python" / "bin" / "python3"; fs::is_regular_file(own, ec))
+        return {text(own)};
+    for (const char* name : {"python3", "python"})
+        if (fs::path python = search_path(name); !python.empty())
+            return {text(python)};
+    fail(L"Setup needs Python 3.10 or newer to prepare the game. Install python3 with your distribution's "
+         L"package manager, then run setup again.");
+}
+#endif
 
 // --- paths.ini ----------------------------------------------------------------------------------
 
@@ -192,26 +281,142 @@ std::wstring strip(const std::wstring& s) {
 }
 
 void write_paths(const fs::path& ini, const fs::path& game, const fs::path& save) {
-    write_text(ini, "; Written by theatrhythm-setup.exe. Run it again to change these folders.\r\n"
-                    "; game: your dump (eboot.bin, sce_module, sce_sys, Media). It is only ever read.\r\n"
-                    "; save: your saves, and theatrhythm.log in its log folder.\r\n"
-                    "; Shader caches are shared by every copy of the game: %LOCALAPPDATA%\\Theatrhythm Final Bar Line\r\n"
-                    "; (cache=<folder> moves them).\r\n"
-                    "[paths]\r\n"
-                    "game=" + narrow(game.wstring()) + "\r\n"
-                    "save=" + narrow(save.wstring()) + "\r\n");
+#ifdef _WIN32
+    const std::string setup = "theatrhythm-setup.exe", cache = "%LOCALAPPDATA%\\Theatrhythm Final Bar Line";
+#else
+    const std::string setup = "theatrhythm-setup", cache = "~/.cache/theatrhythm-fbl";
+#endif
+    const std::string nl = kNewline;
+    write_text(ini, "; Written by " + setup + ". Run it again to change these folders." + nl +
+                    "; game: your dump (eboot.bin, sce_module, sce_sys, Media). It is only ever read." + nl +
+                    "; save: your saves, and theatrhythm.log in its log folder." + nl +
+                    "; Shader caches are shared by every copy of the game: " + cache + nl +
+                    "; (cache=<folder> moves them)." + nl +
+                    "[paths]" + nl +
+                    "game=" + narrow(text(game)) + nl +
+                    "save=" + narrow(text(save)) + nl);
 }
+
+#ifndef _WIN32
+// A desktop entry's quoted argument: ", `, $ and \ escaped inside the quotes, \ doubled again for
+// the string value itself, and % doubled (field codes).
+std::string desktop_quote(const std::string& arg) {
+    std::string q = "\"";
+    for (char c : arg) {
+        if (c == '\\')
+            q += "\\\\\\\\";
+        else if (c == '"' || c == '`' || c == '$')
+            q += std::string("\\") + c;
+        else if (c == '%')
+            q += "%%";
+        else
+            q += c;
+    }
+    return q + "\"";
+}
+
+// $HOME, or the current folder when it is unset.
+fs::path home() {
+    const char* h = std::getenv("HOME");
+    return h && h[0] ? fs::path(h) : fs::current_path();
+}
+#endif
 
 } // namespace
 
+#ifdef _WIN32
+std::wstring widen(std::string_view s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
+
+std::string narrow(std::wstring_view s) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0, nullptr, nullptr);
+    std::string u(n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), u.data(), n, nullptr, nullptr);
+    return u;
+}
+
+std::wstring text(const fs::path& p) {
+    return p.wstring();
+}
+
+fs::path path_of(const std::wstring& s) {
+    return fs::path(s);
+}
+#else
+// UTF-8 to UTF-32 (wchar_t); a malformed byte becomes U+FFFD.
+std::wstring widen(std::string_view s) {
+    std::wstring w;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        int extra = c < 0x80 ? 0 : (c & 0xE0) == 0xC0 ? 1 : (c & 0xF0) == 0xE0 ? 2 : (c & 0xF8) == 0xF0 ? 3 : -1;
+        char32_t code = extra == 0 ? c : extra == 1 ? c & 0x1F : extra == 2 ? c & 0x0F : c & 0x07;
+        bool ok = extra >= 0 && i + static_cast<size_t>(extra) < s.size();
+        for (int k = 1; ok && k <= extra; ++k) {
+            unsigned char next = static_cast<unsigned char>(s[i + static_cast<size_t>(k)]);
+            ok = (next & 0xC0) == 0x80;
+            code = (code << 6) | (next & 0x3F);
+        }
+        if (!ok) {
+            w += L'�';
+            ++i;
+            continue;
+        }
+        w += static_cast<wchar_t>(code);
+        i += static_cast<size_t>(extra) + 1;
+    }
+    return w;
+}
+
+std::string narrow(std::wstring_view s) {
+    std::string u;
+    for (wchar_t wc : s) {
+        auto c = static_cast<char32_t>(wc);
+        if (c < 0x80) {
+            u += static_cast<char>(c);
+        } else if (c < 0x800) {
+            u += static_cast<char>(0xC0 | (c >> 6));
+            u += static_cast<char>(0x80 | (c & 0x3F));
+        } else if (c < 0x10000) {
+            u += static_cast<char>(0xE0 | (c >> 12));
+            u += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            u += static_cast<char>(0x80 | (c & 0x3F));
+        } else {
+            u += static_cast<char>(0xF0 | (c >> 18));
+            u += static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+            u += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            u += static_cast<char>(0x80 | (c & 0x3F));
+        }
+    }
+    return u;
+}
+
+std::wstring text(const fs::path& p) {
+    return widen(p.native());
+}
+
+fs::path path_of(const std::wstring& s) {
+    return fs::path(narrow(s));
+}
+#endif
+
 fs::path exe_folder() {
+#ifdef _WIN32
     wchar_t buf[MAX_PATH * 4];
     DWORD n = GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
     return fs::path(std::wstring(buf, n)).parent_path();
+#else
+    std::error_code ec;
+    fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+    return ec ? fs::current_path() : exe.parent_path();
+#endif
 }
 
 bool same_path(const fs::path& a, const fs::path& b) {
-    return lower(clean(a).wstring()) == lower(clean(b).wstring());
+    return lower(text(clean(a))) == lower(text(clean(b)));
 }
 
 fs::path game_folder(const fs::path& path) {
@@ -241,9 +446,9 @@ std::optional<Paths> read_paths(const fs::path& root) {
         if (value.empty())
             continue;
         if (key == L"game")
-            paths.game = clean(root / value);
+            paths.game = clean(root / path_of(value));
         else if (key == L"save")
-            paths.save = clean(root / value);
+            paths.save = clean(root / path_of(value));
     }
     if (paths.game.empty() || paths.save.empty())
         return std::nullopt;
@@ -283,36 +488,40 @@ fs::path install(const Options& opt, const Log& log) {
     std::vector<std::wstring> missing;
     for (const wchar_t* f : kGameFiles)
         if (!fs::is_regular_file(game / f, ec))
-            missing.push_back(f);
+            missing.push_back(text(fs::path(f).make_preferred()));
     if (!missing.empty())
-        fail(L"This folder isn't a decrypted Theatrhythm Final Bar Line dump:\n" + game.wstring() +
+        fail(L"This folder isn't a decrypted Theatrhythm Final Bar Line dump:\n" + text(game) +
              L"\n\nMissing: " + join(missing));
     for (const fs::path& f : {exe, prepare / L"run.py", root / L"release.txt"})
         if (!fs::is_regular_file(f, ec))
-            fail(f.wstring() + L" is missing." + kIncomplete);
+            fail(text(f) + L" is missing." + kIncomplete);
     std::vector<std::wstring> python = python_command(prepare);
 
-    log(L"Preparing the game from " + game.wstring());
+    log(L"Preparing the game from " + text(game));
     fs::remove(image / L"release.txt", ec); // the image is this release's only once it is complete
     std::vector<std::wstring> command = python;
-    command.insert(command.end(), {(prepare / L"run.py").wstring(), L"prepare", L"--game", game.wstring(),
-                                   L"--out", image.wstring()});
+    command.insert(command.end(), {text(prepare / L"run.py"), L"prepare", L"--game", text(game),
+                                   L"--out", text(image)});
+#ifdef _WIN32
     SetEnvironmentVariableW(L"PYTHONIOENCODING", L"utf-8");
-    if (DWORD code = run(command, prepare, log))
+#else
+    setenv("PYTHONIOENCODING", "utf-8", 1);
+#endif
+    if (unsigned long code = run(command, prepare, log))
         fail(L"Preparing the game failed (exit code " + std::to_wstring(code) + L"). The log says why.");
 
     // On a CPU without some instruction sets the game uses, the sites that use them are rewritten
     // (run.py's play does this at every start; here once).
     std::wstring cpu;
-    DWORD code = run({exe.wstring(), L"--cpu-features"}, root, log, &cpu);
+    unsigned long code = run({text(exe), L"--cpu-features"}, root, log, &cpu);
     if (code == 20)
         fail(L"This PC's CPU cannot run the game:\n" + cpu);
     if (code)
         fail(L"The game does not start (exit code " + std::to_wstring(code) + L")." + kIncomplete);
     if (cpu.find(L"CPU: missing") != std::wstring::npos) {
         command = python;
-        command.insert(command.end(), {(prepare / L"scripts" / L"isa_rewrite.py").wstring(),
-                                       (image / L"boot-linked.bin").wstring(), L"--out", image.wstring()});
+        command.insert(command.end(), {text(prepare / L"scripts" / L"isa_rewrite.py"),
+                                       text(image / L"boot-linked.bin"), L"--out", text(image)});
         if (run(command, prepare, log))
             fail(L"This CPU lacks instructions the game uses, and rewriting them failed. That step needs the "
                  L"Python package iced-x86 (pip install iced-x86); the log says more.");
@@ -320,18 +529,18 @@ fs::path install(const Options& opt, const Log& log) {
         fs::remove(image / L"isa-rewrite.bin", ec);
     }
     write_text(image / L"release.txt", read_text(root / L"release.txt"));
-    log(L"prepared " + image.wstring());
+    log(L"prepared " + text(image));
 
     fs::path settings = root / L"settings.ini";
     if (!fs::exists(settings, ec)) {
-        if (!CopyFileW((prepare / L"settings.example.ini").c_str(), settings.c_str(), TRUE))
-            fail(L"cannot write " + settings.wstring());
+        if (!fs::copy_file(prepare / L"settings.example.ini", settings, ec))
+            fail(L"cannot write " + text(settings));
         log(L"wrote    settings.ini");
     }
 
     fs::create_directories(save, ec);
     if (!fs::is_directory(save, ec))
-        fail(L"Cannot create the save folder " + save.wstring());
+        fail(L"Cannot create the save folder " + text(save));
     if (opt.copy_saves_from && !same_path(*opt.copy_saves_from, save)) {
         for (const wchar_t* f : kSaveFolders) {
             fs::path from = *opt.copy_saves_from / f;
@@ -339,15 +548,16 @@ fs::path install(const Options& opt, const Log& log) {
                 continue;
             fs::copy(from, save / f, fs::copy_options::recursive | fs::copy_options::skip_existing, ec);
             if (ec)
-                fail(L"Cannot copy " + from.wstring() + L" to " + save.wstring() + L": " + widen(ec.message()));
+                fail(L"Cannot copy " + text(from) + L" to " + text(save) + L": " + widen(ec.message()));
         }
-        log(L"copied   saves from " + opt.copy_saves_from->wstring());
+        log(L"copied   saves from " + text(*opt.copy_saves_from));
     }
     write_paths(root / L"paths.ini", game, save);
-    log(L"wrote    paths.ini (game " + game.wstring() + L", save " + save.wstring() + L")");
+    log(L"wrote    paths.ini (game " + text(game) + L", save " + text(save) + L")");
     return exe;
 }
 
+#ifdef _WIN32
 void create_shortcut(const fs::path& target, const fs::path& lnk) {
     HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     IShellLinkW* link = nullptr;
@@ -385,5 +595,49 @@ fs::path desktop_folder() {
     CoTaskMemFree(p);
     return desktop;
 }
+#else
+// A desktop entry that starts the game in its folder; executable, which desktops ask of entries on
+// the Desktop before they trust them.
+void create_shortcut(const fs::path& target, const fs::path& lnk) {
+    std::error_code ec;
+    fs::path folder = target.parent_path();
+    std::string entry = "[Desktop Entry]\n"
+                        "Type=Application\n"
+                        "Name=Theatrhythm Final Bar Line\n"
+                        "Exec=" + desktop_quote(target.native()) + "\n"
+                        "Path=" + folder.native() + "\n"
+                        "Terminal=false\n"
+                        "Categories=Game;\n";
+    if (fs::path icon = folder / "theatrhythm-fbl.png"; fs::is_regular_file(icon, ec))
+        entry += "Icon=" + icon.native() + "\n";
+    fs::create_directories(lnk.parent_path(), ec);
+    write_text(lnk, entry);
+    fs::permissions(lnk, fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
+                    fs::perm_options::add, ec);
+}
+
+// XDG_DESKTOP_DIR of ~/.config/user-dirs.dirs (xdg-user-dirs), else ~/Desktop.
+fs::path desktop_folder() {
+    const char* config = std::getenv("XDG_CONFIG_HOME");
+    fs::path dirs = (config && config[0] ? fs::path(config) : home() / ".config") / "user-dirs.dirs";
+    std::ifstream f(dirs);
+    for (std::string line; std::getline(f, line);) {
+        constexpr std::string_view key = "XDG_DESKTOP_DIR=\"";
+        if (line.rfind(key, 0) != 0 || line.back() != '"')
+            continue;
+        std::string value = line.substr(key.size(), line.size() - key.size() - 1);
+        if (value.rfind("$HOME", 0) == 0)
+            return home() / fs::path(value.substr(5)).relative_path();
+        if (!value.empty() && value[0] == '/')
+            return value;
+    }
+    return home() / "Desktop";
+}
+
+fs::path applications_folder() {
+    const char* data = std::getenv("XDG_DATA_HOME");
+    return (data && data[0] ? fs::path(data) : home() / ".local" / "share") / "applications";
+}
+#endif
 
 } // namespace setup

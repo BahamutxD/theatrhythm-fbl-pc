@@ -10,8 +10,8 @@ int32_t *runtime_errno(void) { static int32_t value; return &value; }
 void runtime_report(void) {}
 void runtime_thread_count_yield(int zero_sleep) { (void)zero_sleep; }
 uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *name) { (void)table; (void)count; (void)name; return 0; }
-/* /data maps to out/kernel-files-test; /app0 to the same place, read-only through game_path. */
-static const char *root="out/kernel-files-test";
+/* /data maps to out/kernel-files-scratch; /app0 to the same place, read-only through game_path. */
+static const char *root="out/kernel-files-scratch";
 int runtime_file_translate(const char *guest, char *out, size_t size) {
     const char *rest=!strncmp(guest,"/data",5) ? guest+5 : !strncmp(guest,"/app0",5) ? guest+5 : NULL;
     if (!rest) return ENOENT;

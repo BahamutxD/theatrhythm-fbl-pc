@@ -21,6 +21,8 @@
 #include <tlhelp32.h>
 #else
 #include <dirent.h>
+#include <signal.h>
+#include <ucontext.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/mman.h>
@@ -191,6 +193,10 @@ void runtime_thread_attach_main(void) {
     GuestThread *t=runtime_thread_current();
     snprintf(t->name,sizeof(t->name),"main");
     set_host_name(t->name);
+}
+void runtime_thread_set_stack(void *low,uint64_t size) {
+    GuestThread *t=runtime_thread_current();
+    t->stack_low=low; t->stack_size=size;
 }
 /* Records are never removed (games create threads again during every load), so a found
  * thread moves to the front: the threads the game asks about (priorities, affinity) are not
@@ -571,10 +577,11 @@ static ABI void rtld_atexit_decrement(void) { __atomic_sub_fetch(&rtld_atexit_pe
  * sceKernelRemoveExceptionHandler(signum) clears it. sceKernelRaiseException(thread, SIGUSR1)
  * runs the handler on that thread as handler(signum, ucontext*): the IL2CPP collector suspends
  * threads this way and reads the stack pointer from the context (PS4Util.prx). Windows: a thread
- * running user code gets a special user APC, which interrupts it and hands over its CONTEXT, as
- * upstream does. That APC waits for a system call to return, so a thread stopped in one (a
- * blocking wait) stays suspended while a proxy host thread, with the target's thread record and
+ * running user code is suspended and resumed at redzone_deliver, which runs the handler on it
+ * below its red zone (no APC: Wine places those differently). A thread stopped in a system call
+ * (a blocking wait) stays suspended while a proxy host thread, with the target's thread record and
  * TCB, runs the handler, and resumes when it returns; register changes are not written back there.
+ * Linux: a host signal runs it on the thread itself, in guest code or blocked in a wait.
  * The handler sees a stack pointer below the saved registers, so a conservative stack scan from
  * it covers them as well. The guest signal mask is not consulted; host faults never reach here. */
 typedef struct {
@@ -593,12 +600,18 @@ typedef struct {
 _Static_assert(__builtin_offsetof(GuestUcontext,mc.rsp)==0xf8,"FreeBSD ucontext layout");
 typedef void (ABI *ExceptionHandler)(int32_t,GuestUcontext *);
 static ExceptionHandler exception_handlers[128];
-static uint64_t exceptions_raised, exceptions_delivered, exceptions_entered, raised_apc, raised_proxy;
+static uint64_t exceptions_raised, exceptions_delivered, exceptions_entered, raised_running, raised_proxy;
 static int exception_signal(int32_t signum) {
     return signum==1 || signum==4 || signum==8 || signum==10 || signum==11 || signum==30;
 }
+#ifndef _WIN32
+static void install_host_signal(void);
+#endif
 static ABI int32_t install_exception_handler(int32_t signum,ExceptionHandler handler) {
     if (!exception_signal(signum)) return ERR(22);
+#ifndef _WIN32
+    install_host_signal();
+#endif
     ExceptionHandler none=NULL;
     if (!__atomic_compare_exchange_n(&exception_handlers[signum-1],&none,handler,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))
         return ERR(35);
@@ -611,25 +624,43 @@ static ABI int32_t remove_exception_handler(int32_t signum) {
     return 0;
 }
 #ifdef _WIN32
-typedef void (*ApcRoutine)(void *,void *,void *,CONTEXT *);
-typedef LONG (NTAPI *QueueApcEx)(HANDLE,ULONG_PTR,ApcRoutine,void *,void *,void *);
 static void context_to_guest(const CONTEXT *c,GuestMcontext *m) {
     m->r8=c->R8; m->r9=c->R9; m->r10=c->R10; m->r11=c->R11; m->r12=c->R12; m->r13=c->R13;
     m->r14=c->R14; m->r15=c->R15; m->rdi=c->Rdi; m->rsi=c->Rsi; m->rbp=c->Rbp; m->rbx=c->Rbx;
     m->rdx=c->Rdx; m->rax=c->Rax; m->rcx=c->Rcx; m->rsp=c->Rsp; m->rip=c->Rip;
     m->rflags=c->EFlags; m->fs=c->SegFs; m->gs=c->SegGs;
 }
-/* Windows builds an APC's frame right below the thread's stack pointer, over the 128-byte red zone
- * below rsp where SysV leaf functions keep locals. A thread interrupted in guest code is first moved
- * to redzone_resume with rsp at RESUME_GAP below its own, its rip and rsp in the two slots there
- * (below the red zone), so the APC runs below them; redzone_resume then puts rsp back and jumps to
- * the rip slot, changing no register or flag. */
+/* SysV leaf functions keep locals in the 128 bytes below rsp (the red zone), and a frame the OS
+ * builds for an APC there clobbers them: FMOD's Vorbis PCM output then read a null pointer (guest
+ * 0x17433fc). Windows can be told where the APC runs, Wine (Proton) still clobbered it, so no APC
+ * is used: a thread interrupted in guest code is moved to redzone_deliver with rsp RESUME_GAP below
+ * its own, its rip and rsp in the two slots there and the signal number below them. It saves every
+ * register, flag and the x87/SSE/AVX state (xsave), runs the handler (redzone_handler) with the
+ * direction flag clear (the thread may be inside a backward copy), restores them and leaves through
+ * redzone_resume, which puts rsp back and jumps to the rip slot. */
 #define RESUME_GAP 144
-void redzone_resume(void), redzone_resume_jump(void);
+void redzone_resume(void), redzone_resume_jump(void), redzone_deliver(void);
+void redzone_handler(uint64_t *saved);
 __asm__(".text\n.globl redzone_resume\nredzone_resume:\n"
         " mov 8(%rsp),%rsp\n"
         ".globl redzone_resume_jump\nredzone_resume_jump:\n"
-        " jmp *-144(%rsp)\n");
+        " jmp *-144(%rsp)\n"
+        ".globl redzone_deliver\nredzone_deliver:\n"
+        " pushfq\n push %rax\n push %rcx\n push %rdx\n push %rbx\n push %rbp\n push %rsi\n push %rdi\n"
+        " push %r8\n push %r9\n push %r10\n push %r11\n push %r12\n push %r13\n push %r14\n push %r15\n"
+        " cld\n mov %rsp,%rbx\n sub $1024,%rsp\n and $-64,%rsp\n"
+        " xor %eax,%eax\n mov %rax,512(%rsp)\n mov %rax,520(%rsp)\n mov %rax,528(%rsp)\n mov %rax,536(%rsp)\n"
+        " mov %rax,544(%rsp)\n mov %rax,552(%rsp)\n mov %rax,560(%rsp)\n mov %rax,568(%rsp)\n"
+        " mov $7,%eax\n xor %edx,%edx\n xsave64 (%rsp)\n"
+        " mov %rbx,%rcx\n sub $32,%rsp\n call redzone_handler\n add $32,%rsp\n"
+        " mov $7,%eax\n xor %edx,%edx\n xrstor64 (%rsp)\n mov %rbx,%rsp\n"
+        " pop %r15\n pop %r14\n pop %r13\n pop %r12\n pop %r11\n pop %r10\n pop %r9\n pop %r8\n"
+        " pop %rdi\n pop %rsi\n pop %rbp\n pop %rbx\n pop %rdx\n pop %rcx\n pop %rax\n popfq\n"
+        " lea 8(%rsp),%rsp\n jmp redzone_resume\n");
+/* What redzone_deliver pushed, from its stack pointer up, then the signal number and the slots. */
+enum { SAVED_R15, SAVED_R14, SAVED_R13, SAVED_R12, SAVED_R11, SAVED_R10, SAVED_R9, SAVED_R8,
+       SAVED_RDI, SAVED_RSI, SAVED_RBP, SAVED_RBX, SAVED_RDX, SAVED_RCX, SAVED_RAX, SAVED_RFLAGS,
+       SAVED_SIGNUM, SAVED_RIP, SAVED_RSP };
 /* A thread stopped inside redzone_resume: the rip and rsp it is on its way back to. */
 static void leave_resume(CONTEXT *c) {
     if (c->Rip==(DWORD64)(uintptr_t)redzone_resume) {
@@ -639,33 +670,45 @@ static void leave_resume(CONTEXT *c) {
         c->Rip=*(const uint64_t *)(uintptr_t)(c->Rsp-RESUME_GAP);
     }
 }
-/* APC path: runs on the interrupted thread, below its stack pointer; the reported stack pointer
- * is this frame's context copy, and registers the handler changes are written back on return. A
- * thread at redzone_resume reports and takes back its rip and rsp through the slots. */
-static void deliver_exception(void *signal,void *unused1,void *unused2,CONTEXT *c) {
-    (void)unused1; (void)unused2;
-    int32_t signum=(int32_t)(intptr_t)signal;
+/* Runs on the interrupted thread from redzone_deliver; the reported stack pointer is this frame's
+ * context copy, and registers the handler changes are written back on return (rip and rsp through
+ * the slots). */
+void redzone_handler(uint64_t *saved) {
+    int32_t signum=(int32_t)saved[SAVED_SIGNUM];
     ExceptionHandler handler=__atomic_load_n(&exception_handlers[signum-1],__ATOMIC_ACQUIRE);
-    if (!handler || !c) return;
-    uint64_t *resume=c->Rip==(DWORD64)(uintptr_t)redzone_resume ? (uint64_t *)(uintptr_t)c->Rsp : NULL;
+    if (!handler) return;
     GuestUcontext u={0};
     GuestMcontext *m=&u.mc;
-    context_to_guest(c,m);
-    if (resume) m->rip=resume[0];
+    m->r8=saved[SAVED_R8]; m->r9=saved[SAVED_R9]; m->r10=saved[SAVED_R10]; m->r11=saved[SAVED_R11];
+    m->r12=saved[SAVED_R12]; m->r13=saved[SAVED_R13]; m->r14=saved[SAVED_R14]; m->r15=saved[SAVED_R15];
+    m->rdi=saved[SAVED_RDI]; m->rsi=saved[SAVED_RSI]; m->rbp=saved[SAVED_RBP]; m->rbx=saved[SAVED_RBX];
+    m->rdx=saved[SAVED_RDX]; m->rax=saved[SAVED_RAX]; m->rcx=saved[SAVED_RCX];
+    m->rip=saved[SAVED_RIP]; m->rflags=saved[SAVED_RFLAGS];
+    __asm__("mov %%fs,%0\n mov %%gs,%1" : "=r"(m->fs), "=r"(m->gs));
     const uint64_t reported=(uint64_t)(uintptr_t)&u;
     m->rsp=reported;
     __atomic_add_fetch(&exceptions_entered,1,__ATOMIC_RELAXED);
     handler(signum,&u);
-    c->R8=m->r8; c->R9=m->r9; c->R10=m->r10; c->R11=m->r11; c->R12=m->r12; c->R13=m->r13;
-    c->R14=m->r14; c->R15=m->r15; c->Rdi=m->rdi; c->Rsi=m->rsi; c->Rbp=m->rbp; c->Rbx=m->rbx;
-    c->Rdx=m->rdx; c->Rax=m->rax; c->Rcx=m->rcx;
-    if (resume) {
-        resume[0]=m->rip;
-        if (m->rsp!=reported) resume[1]=m->rsp;
-    } else {
-        c->Rip=m->rip;
-        if (m->rsp!=reported) c->Rsp=m->rsp;
-    }
+    saved[SAVED_R8]=m->r8; saved[SAVED_R9]=m->r9; saved[SAVED_R10]=m->r10; saved[SAVED_R11]=m->r11;
+    saved[SAVED_R12]=m->r12; saved[SAVED_R13]=m->r13; saved[SAVED_R14]=m->r14; saved[SAVED_R15]=m->r15;
+    saved[SAVED_RDI]=m->rdi; saved[SAVED_RSI]=m->rsi; saved[SAVED_RBP]=m->rbp; saved[SAVED_RBX]=m->rbx;
+    saved[SAVED_RDX]=m->rdx; saved[SAVED_RAX]=m->rax; saved[SAVED_RCX]=m->rcx;
+    saved[SAVED_RIP]=m->rip;
+    if (m->rsp!=reported) saved[SAVED_RSP]=m->rsp;
+    __atomic_add_fetch(&exceptions_delivered,1,__ATOMIC_RELAXED);
+}
+/* Raised on the calling thread: the handler runs before the raise returns, with this thread's
+ * context; register changes have nowhere to go back to (it is inside the runtime). */
+static void deliver_to_self(int32_t signum) {
+    ExceptionHandler handler=__atomic_load_n(&exception_handlers[signum-1],__ATOMIC_ACQUIRE);
+    if (!handler) return;
+    CONTEXT c;
+    RtlCaptureContext(&c);
+    GuestUcontext u={0};
+    context_to_guest(&c,&u.mc);
+    u.mc.rsp=(uint64_t)(uintptr_t)&u;
+    __atomic_add_fetch(&exceptions_entered,1,__ATOMIC_RELAXED);
+    handler(signum,&u);
     __atomic_add_fetch(&exceptions_delivered,1,__ATOMIC_RELAXED);
 }
 /* Proxy path: the target is suspended in a system call. Its registers are copied below its red
@@ -690,17 +733,57 @@ static void *proxy_deliver(void *p) {
     free(x);
     return NULL;
 }
+#else
+/* A real-time signal, which the kernel queues: raises sent back to back are each delivered (a
+ * standard signal would merge them). The kernel builds its frame below the red zone, restores every
+ * register and the FPU state on return, and restarts or wakes a wait the thread was blocked in. */
+#define EXCEPTION_HOST_SIGNAL (SIGRTMIN+2)
+/* Runs on the raised thread, whose GS still holds its guest TCB; the handler starts with a fresh FPU
+ * state, so the PS4's comes first. Registers the handler changes are written back on return. */
+static void exception_signal_handler(int sig,siginfo_t *info,void *context) {
+    (void)sig; (void)info;
+    ExceptionHandler handler=__atomic_load_n(&exception_handlers[30-1],__ATOMIC_ACQUIRE);
+    if (!handler) return;
+    int saved_errno=errno;
+    runtime_orbis_fpu();
+    greg_t *g=((ucontext_t *)context)->uc_mcontext.gregs;
+    GuestUcontext u={0};
+    GuestMcontext *m=&u.mc;
+    m->r8=(uint64_t)g[REG_R8]; m->r9=(uint64_t)g[REG_R9]; m->r10=(uint64_t)g[REG_R10]; m->r11=(uint64_t)g[REG_R11];
+    m->r12=(uint64_t)g[REG_R12]; m->r13=(uint64_t)g[REG_R13]; m->r14=(uint64_t)g[REG_R14]; m->r15=(uint64_t)g[REG_R15];
+    m->rdi=(uint64_t)g[REG_RDI]; m->rsi=(uint64_t)g[REG_RSI]; m->rbp=(uint64_t)g[REG_RBP]; m->rbx=(uint64_t)g[REG_RBX];
+    m->rdx=(uint64_t)g[REG_RDX]; m->rax=(uint64_t)g[REG_RAX]; m->rcx=(uint64_t)g[REG_RCX];
+    m->rip=(uint64_t)g[REG_RIP]; m->rflags=(uint64_t)g[REG_EFL];
+    __asm__("mov %%fs,%0\n mov %%gs,%1" : "=r"(m->fs), "=r"(m->gs));
+    const uint64_t reported=(uint64_t)(uintptr_t)&u;
+    m->rsp=reported;
+    __atomic_add_fetch(&exceptions_entered,1,__ATOMIC_RELAXED);
+    handler(30,&u);
+    g[REG_R8]=(greg_t)m->r8; g[REG_R9]=(greg_t)m->r9; g[REG_R10]=(greg_t)m->r10; g[REG_R11]=(greg_t)m->r11;
+    g[REG_R12]=(greg_t)m->r12; g[REG_R13]=(greg_t)m->r13; g[REG_R14]=(greg_t)m->r14; g[REG_R15]=(greg_t)m->r15;
+    g[REG_RDI]=(greg_t)m->rdi; g[REG_RSI]=(greg_t)m->rsi; g[REG_RBP]=(greg_t)m->rbp; g[REG_RBX]=(greg_t)m->rbx;
+    g[REG_RDX]=(greg_t)m->rdx; g[REG_RAX]=(greg_t)m->rax; g[REG_RCX]=(greg_t)m->rcx;
+    g[REG_RIP]=(greg_t)m->rip;
+    if (m->rsp!=reported) g[REG_RSP]=(greg_t)m->rsp;
+    __atomic_add_fetch(&exceptions_delivered,1,__ATOMIC_RELAXED);
+    errno=saved_errno;
+}
+static void install_host_signal(void) {
+    static int installed;
+    if (__atomic_exchange_n(&installed,1,__ATOMIC_ACQ_REL)) return;
+    struct sigaction sa={0};
+    sa.sa_sigaction=exception_signal_handler;
+    sa.sa_flags=SA_SIGINFO|SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(EXCEPTION_HOST_SIGNAL,&sa,NULL)) { perror("STOP: sigaction (guest exceptions)"); exit(21); }
+}
 #endif
 static ABI int32_t raise_exception(GuestThread *t,int32_t signum) {
     if (signum!=30) return ERR(22);
     if (!live_thread(t)) return ERR(3);
     __atomic_add_fetch(&exceptions_raised,1,__ATOMIC_RELAXED);
 #ifdef _WIN32
-    static QueueApcEx queue;
-    if (!queue) queue=(QueueApcEx)(void *)GetProcAddress(GetModuleHandleA("ntdll.dll"),"NtQueueApcThreadEx");
-    if (!queue) return ERR(3);
-    /* 1 = QueueUserApcFlagsSpecialUserApc (Windows 10 1903 and later) */
-    if (t==current) return queue(t->os_handle,1,deliver_exception,(void *)(intptr_t)signum,NULL,NULL)<0 ? ERR(3) : 0;
+    if (t==current) { deliver_to_self(signum); return 0; }
     /* Suspended under the lock its exit takes: the handle stays open and the thread alive. */
     pthread_mutex_lock(&lock);
     HANDLE h=t->finished ? NULL : t->os_handle;
@@ -723,21 +806,33 @@ static ABI int32_t raise_exception(GuestThread *t,int32_t signum) {
         __atomic_add_fetch(&raised_proxy,1,__ATOMIC_RELAXED);
         return 0;
     }
-    /* Running code: the APC is delivered as it resumes, at redzone_resume below its red zone. */
+    /* Running code: it resumes at redzone_deliver, below its red zone. */
     leave_resume(&x->c);
     uint64_t *slot=(uint64_t *)(uintptr_t)(x->c.Rsp-RESUME_GAP);
-    slot[0]=x->c.Rip; slot[1]=x->c.Rsp;
-    x->c.Rip=(DWORD64)(uintptr_t)redzone_resume; x->c.Rsp=(DWORD64)(uintptr_t)slot;
+    slot[0]=x->c.Rip; slot[1]=x->c.Rsp; slot[-1]=(uint64_t)signum;
+    x->c.Rip=(DWORD64)(uintptr_t)redzone_deliver; x->c.Rsp=(DWORD64)(uintptr_t)(slot-1);
     x->c.ContextFlags=CONTEXT_CONTROL;
     const BOOL moved=SetThreadContext(h,&x->c);
     free(x);
-    if (!moved) { ResumeThread(h); return ERR(3); }
-    __atomic_add_fetch(&raised_apc,1,__ATOMIC_RELAXED);
-    LONG r=queue(h,1,deliver_exception,(void *)(intptr_t)signum,NULL,NULL);
+    if (moved) __atomic_add_fetch(&raised_running,1,__ATOMIC_RELAXED);
     ResumeThread(h);
-    return r<0 ? ERR(3) : 0;
+    return moved ? 0 : ERR(3);
 #else
-    return ERR(78); /* ENOSYS: delivery is implemented for Windows hosts only */
+    install_host_signal();
+    /* Raised on the calling thread: the signal is taken before pthread_kill returns, so the lock
+     * (which the handler's guest code may need) is not held. Another thread is signalled under the
+     * lock its exit takes, so its pthread_t stays valid. */
+    int e;
+    if (t==current) {
+        e=pthread_kill(t->host,EXCEPTION_HOST_SIGNAL);
+    } else {
+        pthread_mutex_lock(&lock);
+        e=t->finished ? ESRCH : pthread_kill(t->host,EXCEPTION_HOST_SIGNAL);
+        pthread_mutex_unlock(&lock);
+    }
+    if (e) return ERR(3);
+    __atomic_add_fetch(&raised_running,1,__ATOMIC_RELAXED);
+    return 0;
 #endif
 }
 
@@ -891,9 +986,9 @@ void runtime_thread_report(void) {
     printf("Runtime: guest threads created=%zu, exited=%zu, joined=%zu, thread-exit destructors pending=%lld\n",
            created,exited,joined_count,(long long)__atomic_load_n(&rtld_atexit_pending,__ATOMIC_RELAXED));
     pthread_mutex_unlock(&lock);
-    printf("Runtime: exceptions raised=%llu (APC %llu, proxy %llu), handlers entered=%llu, returned=%llu\n",
+    printf("Runtime: exceptions raised=%llu (running %llu, proxy %llu), handlers entered=%llu, returned=%llu\n",
            (unsigned long long)__atomic_load_n(&exceptions_raised,__ATOMIC_RELAXED),
-           (unsigned long long)__atomic_load_n(&raised_apc,__ATOMIC_RELAXED),
+           (unsigned long long)__atomic_load_n(&raised_running,__ATOMIC_RELAXED),
            (unsigned long long)__atomic_load_n(&raised_proxy,__ATOMIC_RELAXED),
            (unsigned long long)__atomic_load_n(&exceptions_entered,__ATOMIC_RELAXED),
            (unsigned long long)__atomic_load_n(&exceptions_delivered,__ATOMIC_RELAXED));

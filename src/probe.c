@@ -13,9 +13,9 @@
 #if !defined(__x86_64__) || !defined(__GNUC__)
 #error This prototype requires x86-64 GCC or Clang (including MinGW).
 #endif
+#include "launch.h"
 #ifdef _WIN32
 #include <windows.h>
-#include "launch.h"
 #else
 #include <sys/mman.h>
 #include <malloc.h>
@@ -269,13 +269,13 @@ static void fault(int sig, siginfo_t *info, void *context) {
         snprintf(emulating, sizeof(emulating), " While emulating site 0x%" PRIx64 " (%s)",
                  isa_table->sites[site].offset, isa_kind_name(isa_table->sites[site].kind));
     if (site >= 0 || rip - (uintptr_t)image < 0x10000000)
-        snprintf(line, sizeof(line), "Guest fault (signal %d) at guest offset 0x%lx, address %p%s\n",
+        snprintf(line, sizeof(line), "Fault: signal %d at guest offset 0x%lx, address %p%s\n",
                  sig, (unsigned long)(rip - (uintptr_t)image), info->si_addr, emulating);
     else if (dladdr((void *)rip, &where) && where.dli_fname)
-        snprintf(line, sizeof(line), "Host fault (signal %d) in %s+0x%lx (%s), address %p\n", sig, where.dli_fname,
+        snprintf(line, sizeof(line), "Fault: signal %d in %s+0x%lx (%s), address %p\n", sig, where.dli_fname,
                  (unsigned long)(rip - (uintptr_t)where.dli_fbase), where.dli_sname ? where.dli_sname : "?", info->si_addr);
     else
-        snprintf(line, sizeof(line), "Fault (signal %d) at RIP %p, address %p\n", sig, (void *)rip, info->si_addr);
+        snprintf(line, sizeof(line), "Fault: signal %d at RIP %p, address %p\n", sig, (void *)rip, info->si_addr);
     { ssize_t written_=write(2, line, strlen(line)); (void)written_; }
     if (gpu_enabled) theatrhythm_gpu_dump_guest_writes(context);
     /* Host call chain (frames with unwind info; guest frames end it). */
@@ -290,7 +290,7 @@ static void fault(int sig, siginfo_t *info, void *context) {
         ssize_t written_=write(2, line, strlen(line)); (void)written_;
     }
     if (isa_table) { isa_rewrite_report(isa_table, stderr); fflush(stderr); }
-    _exit(128 + sig);
+    _exit(3); /* as the Windows handler */
 }
 #endif
 #ifndef _WIN32
@@ -379,6 +379,17 @@ static int mapped(Segment *segments, uint64_t count, uint64_t address, uint64_t 
 }
 /* Restarts the game (sceSystemServiceLoadExec of its own eboot): this process's command line is
  * started again, then this process ends, releasing its GPU device and memory. */
+#ifndef _WIN32
+/* Linux: the same process image again (exec releases the GPU device and the guest memory). */
+static char **restart_argv;
+void runtime_restart(void) {
+    fflush(NULL);
+    puts("Runtime: restarting with the same command line");
+    execv("/proc/self/exe",restart_argv);
+    perror("runtime_restart: execv");
+    _exit(1);
+}
+#else
 void runtime_restart(void) {
     fflush(NULL);
     puts("Runtime: restarting with the same command line");
@@ -394,6 +405,7 @@ void runtime_restart(void) {
     CloseHandle(process.hThread); CloseHandle(process.hProcess);
     TerminateProcess(GetCurrentProcess(),0);
 }
+#endif
 
 /* The guest code needs the PS4's instruction sets; THEATRHYTHM_CPU_CHECK=0 skips this. A
  * missing fatal set prints STOP and returns 0; the rewritable ones go to cpu_missing_sets, named
@@ -477,6 +489,7 @@ static int mount_boot_config_4k(const char *boot,const char *app0) {
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
 #ifndef _WIN32
+    restart_argv=argv;
     /* Keep host heap objects handed to the guest (thread handles, TLS) in the
        non-PIE brk heap, i.e. below 1 TiB: the guest packs pointers into 40 bits. */
     mallopt(M_ARENA_MAX,1);
@@ -495,9 +508,9 @@ int main(int argc, char **argv) {
         runtime_pad_describe();
         return 0;
     }
-#ifdef _WIN32
     /* No boot file (a shortcut or a double-click): the set-up folders from paths.ini (src/launch.c). */
     if ((argc < 2 || !strncmp(argv[1], "--", 2)) && launch_from_paths_ini(&argc, &argv)) return 1;
+#ifdef _WIN32
     /* The PS4 user range must stay free of host allocations (GPU driver, heaps), and the guest
      * TCB needs one of the 64 TEB TLS slots before DLLs (Vulkan drivers) take them. */
     runtime_memory_reserve();
@@ -895,10 +908,11 @@ int main(int argc, char **argv) {
     typedef void (ABI *Entry)(void *, void (ABI *)(void));
     ((Entry)(image + entry))(&params, guest_exit);
 #else
-    /* The guest main thread runs on a stack below 1 TiB like PS4 stacks. */
-    enum { MAIN_STACK=8*1024*1024 };
+    /* The guest main thread runs on a stack below 1 TiB like PS4 stacks; 16 MiB, as on Windows. */
+    enum { MAIN_STACK=16*1024*1024 };
     unsigned char *stack=runtime_low_map(MAIN_STACK,PROT_READ|PROT_WRITE);
     if (!stack) fail("cannot allocate guest main stack");
+    runtime_thread_set_stack(stack,MAIN_STACK);
     enter_on_stack(image+entry,&params,(void *)guest_exit,stack+MAIN_STACK-64);
 #endif
     fail("entry unexpectedly returned");

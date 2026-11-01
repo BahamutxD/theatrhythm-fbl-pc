@@ -116,10 +116,11 @@ class LoaderTests(unittest.TestCase):
         self.assertIn('incorrect memory image size', r.stderr)
 
     def test_illegal_instruction_reports_guest_offset(self):
-        # ud2: the fault handler names the illegal instruction exception and exits with 3.
+        # ud2: the fault handler names the illegal instruction exception (Linux: SIGILL) and exits with 3.
         r = self.run_image(package(b'\x0f\x0b'))
         self.assertEqual(r.returncode, 3, r.stderr)
-        self.assertIn('Fault: exception 0xc000001d at guest offset 0x0 ', r.stderr)
+        self.assertIn('Fault: exception 0xc000001d at guest offset 0x0 ' if sys.platform == 'win32' else
+                      'Fault: signal 4 at guest offset 0x0,', r.stderr)
 
     def test_runtime_returns_from_verified_init_env(self):
         # Align stack, call _init_env through +32, then tail-jump to unknown +40.
