@@ -6,7 +6,8 @@
 
 <p align="center">
   An unofficial native PC runner for the PS4 version of <b>Theatrhythm Final Bar Line</b>.<br>
-  <a href="https://github.com/YAPhoa/theatrhythm-fbl-pc/releases/latest"><b>Download the latest release</b></a>
+  <a href="https://github.com/YAPhoa/theatrhythm-fbl-pc/releases/latest"><b>Download the latest release</b></a> ·
+  <a href="https://ko-fi.com/yohialfredo">Support me on Ko-fi</a>
 </p>
 
 It runs the game's own code natively on Windows and Linux, with a Vulkan renderer, keyboard and
