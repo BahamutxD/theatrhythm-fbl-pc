@@ -458,8 +458,15 @@ struct CompileTimer {
     }
 };
 
-// theatrhythm: TheatrhythmSettings::async_shaders_skip_frames; -1 skips without bound.
+// theatrhythm: set while GetGraphicsPipeline serves a draw that must not be skipped.
+thread_local bool must_draw = false;
+
+// theatrhythm: TheatrhythmSettings::async_shaders_skip_frames; -1 skips without bound. Draws that
+// must not be skipped have no budget: they wait for their build.
 int SkipFrames() {
+    if (must_draw) {
+        return 0;
+    }
     return TheatrhythmSettings::Get().async_shaders_skip_frames.load(std::memory_order_relaxed);
 }
 
@@ -808,13 +815,21 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
 }
 
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params,
-                                                           const PreparedDraw* prepared) {
+                                                           const PreparedDraw* prepared,
+                                                           bool no_skip) {
     SeedWorkerCaches();
     PublishShaders();
     PublishGraphics();
     PumpWarmUp();
     ReportDiskShaders();
     ReportCompiles();
+    // Set after publishing, whose failure handling of other builds reads SkipFrames() too.
+    must_draw = no_skip;
+    struct Reset {
+        ~Reset() {
+            must_draw = false;
+        }
+    } reset;
     used_prepared = nullptr;
     if (prepared) {
         if (const auto* pipeline = TryPreparedPipeline(*prepared)) {

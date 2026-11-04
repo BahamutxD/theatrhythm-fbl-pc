@@ -913,7 +913,8 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
             return;
         }
     }
-    const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline({}, prepared);
+    const GraphicsPipeline* pipeline =
+        pipeline_cache.GetGraphicsPipeline({}, prepared, DrawsFreshTarget());
     const PreparedDraw* used_prepared = pipeline_cache.UsedPrepared();
     if (prepared) {
         draw_prep->Count(pipeline != nullptr &&
@@ -1088,7 +1089,8 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         .vertex_sgpr_offset = vertex_sgpr_offset,
         .instance_sgpr_offset = instance_sgpr_offset,
     };
-    const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline(params);
+    const GraphicsPipeline* pipeline =
+        pipeline_cache.GetGraphicsPipeline(params, nullptr, DrawsFreshTarget());
     if (!pipeline) {
         CaptureDropped(pipeline_cache.MissReason());
         return;
@@ -3359,6 +3361,47 @@ void Rasterizer::MarkPass(const GraphicsPipeline* pipeline, const RenderState& s
                                          : std::string{"-"},
                            vs.pgm_hash, ps ? ps->pgm_hash : 0);
     });
+}
+
+bool Rasterizer::DrawsFreshTarget() {
+    constexpr u64 RecentFrames = 4;   // unused for longer: the next use starts fresh again
+    constexpr u64 ForgetFrames = 600; // entries pruned once unused this long
+    constexpr size_t PruneAbove = 64;
+    const auto& regs = Regs();
+    const u64 frame = TheatrhythmStats::gpu_frames.load(std::memory_order_relaxed);
+    bool fresh = false;
+    // Every draw in the first frame of a target's (re)use is fresh, not only the first one.
+    const auto note = [&](VAddr address, u32 extent) {
+        for (auto& target : recent_targets) {
+            if (target.address == address && target.extent == extent) {
+                if (frame - target.frame > RecentFrames) {
+                    target.since = frame;
+                }
+                target.frame = frame;
+                fresh |= target.since == frame;
+                return;
+            }
+        }
+        fresh = true;
+        recent_targets.push_back({address, extent, frame, frame});
+    };
+    bool has_color = false;
+    for (u32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS; ++cb) {
+        if (regs.color_buffers[cb]) {
+            note(regs.color_buffers[cb].Address(), CbExtent(cb).raw);
+            has_color = true;
+        }
+    }
+    if (!has_color && regs.depth_buffer.DepthValid()) {
+        note(regs.depth_buffer.DepthAddress(), DbExtent().raw);
+    }
+    if (recent_targets.size() > PruneAbove && frame != recent_targets_pruned) {
+        recent_targets_pruned = frame;
+        std::erase_if(recent_targets, [frame](const RecentTarget& target) {
+            return frame - target.frame > ForgetFrames;
+        });
+    }
+    return fresh;
 }
 
 void Rasterizer::NoteFrameStart() {

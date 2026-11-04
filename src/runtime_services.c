@@ -768,9 +768,12 @@ static ABI int32_t keyboard_info(uint32_t resource,void *info) { (void)resource;
  * The count of trophies and their icons (TROP000.PNG, TROP001.PNG...) come from the game's
  * own sce_sys/trophy/trophy00.trp. The unlocked set is saved in <user dir>/trophies.dat
  * (user dir: THEATRHYTHM_USER_DIR, or "user"). Names for the unlock notice come from an optional,
- * hand-made <user dir>/trophy_names.txt. */
+ * hand-made <user dir>/trophy_names.txt.
+ * Without the TRP (some dumps lack it) the count is still the game's 42 (ids 0-41): with a count of
+ * 0 the game reads every trophy as locked and awards each trophy feat again once per launch. */
 #define TROPHY_MAX 128
-#define TROPHY_ALREADY_UNLOCKED ((int32_t)0x80551609)
+#define TROPHY_GAME_COUNT 42
+#define TROPHY_ALREADY_UNLOCKED ((int32_t)0x8055160C) /* checked by the game's unlock callback */
 static uint32_t trophy_flags[4];
 static uint32_t trophy_total;
 static int trophy_ready;
@@ -871,8 +874,11 @@ static void trophy_load_once(void) {
     FILE *f=fopen(trophy_state_path(),"rb");
     if (f) { if (fread(trophy_flags,sizeof(trophy_flags),1,f)!=1) memset(trophy_flags,0,sizeof(trophy_flags)); fclose(f); }
     trophy_load_names();
+    for (int i=0;i<TROPHY_GAME_COUNT;i++) trophy_ids[i]=i; /* kept when the TRP is missing or unreadable */
+    trophy_total=trophy_id_count=TROPHY_GAME_COUNT;
     int fd=(int)runtime_file_open("/app0/sce_sys/trophy/trophy00.trp",0,0);
-    if (fd<0) { note("trophies: trophy00.trp not found, trophy count unknown"); return; }
+    if (fd<0) fd=(int)runtime_file_open("/app0/sce_sys/trophy00.trp",0,0);
+    if (fd<0) { note("trophies: trophy00.trp not found; 42 trophies assumed, no trophy icons"); return; }
     const uint64_t limit=32u<<20;
     uint64_t cap=4u<<20, got=0;
     unsigned char *buf=malloc(cap);
@@ -904,8 +910,7 @@ static void trophy_load_once(void) {
             if (id<TROPHY_MAX && total<TROPHY_MAX) trophy_ids[total++]=id;
         }
     }
-    trophy_total=total;
-    trophy_id_count=total;
+    if (total) trophy_total=trophy_id_count=total;
     printf("Runtime: trophies: %u in trophy00.trp, %u already unlocked\n",total,
         (unsigned)(__builtin_popcount(trophy_flags[0])+__builtin_popcount(trophy_flags[1])+__builtin_popcount(trophy_flags[2])+__builtin_popcount(trophy_flags[3])));
 }
@@ -962,7 +967,7 @@ static ABI int32_t trophy_unlock(int32_t ctx,int32_t handle,int32_t id,int32_t *
         platinum_now=id!=0 && trophy_grant_platinum();
     }
     pthread_mutex_unlock(&lock);
-    if (already) return TROPHY_ALREADY_UNLOCKED;
+    if (already) { printf("Runtime: trophy %d already unlocked\n",id); return TROPHY_ALREADY_UNLOCKED; }
     printf("Runtime: trophy %d unlocked\n",id);
     trophy_notify(id);
     if (platinum_now) {

@@ -1291,7 +1291,12 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
     Image& image = slot_images[image_id];
     if (desc.type == BindingType::Storage) {
         image.flags |= ImageFlagBits::GpuModified;
-        if (readback_linear_images && (!image.info.props.is_tiled || image.info.size.width <= 8) &&
+        // theatrhythm: linear images a shader writes are read back without
+        // THEATRHYTHM_READBACK_LINEAR too: Texture2D.ReadPixels copies a render texture into the
+        // texture's linear memory with a compute shader, then Apply uploads that memory (the Live
+        // Info panel backgrounds).
+        const bool linear = !image.info.props.is_tiled;
+        if ((linear || (readback_linear_images && image.info.size.width <= 8)) &&
             image.info.guest_address != 0) {
             std::unique_lock lk{download_images_mutex};
             download_images.emplace(image_id);

@@ -292,6 +292,19 @@ private:
     void NoteFrameStart();
     /// The display buffer of the last NoteFrameStart (HUD draws go there too).
     VAddr last_display_buffer = 0;
+    /// theatrhythm: whether the draw renders into a target no draw used in the last few GPU frames,
+    /// noting its targets as used. Such a draw (an offscreen texture rendered once, as for
+    /// Texture2D.ReadPixels) waits for its pipeline instead of being skipped while it builds,
+    /// since nothing draws it again. Command processor thread.
+    bool DrawsFreshTarget();
+    struct RecentTarget {
+        VAddr address;
+        u32 extent;
+        u64 frame; ///< GPU frame of the last draw
+        u64 since; ///< GPU frame the current run of draws started
+    };
+    std::vector<RecentTarget> recent_targets;
+    u64 recent_targets_pruned = 0;
     /// THEATRHYTHM_GPU_PROFILE: a timestamp where a render pass starts (vk_gpu_profiler.h).
     void MarkPass(const GraphicsPipeline* pipeline, const RenderState& state);
     void BindVertexBuffers(const GraphicsPipeline* pipeline,

@@ -151,8 +151,11 @@ public:
     bool LoadGraphicsPipeline(Serialization::Archive& ar);
     bool LoadPipelineStage(Serialization::Archive& ar, size_t stage);
 
+    /// theatrhythm: with `no_skip` the draw waits for a pipeline still building instead of being
+    /// skipped (async_shaders_skip_frames).
     const GraphicsPipeline* GetGraphicsPipeline(const DrawIndirectParams params = {},
-                                                const PreparedDraw* prepared = nullptr);
+                                                const PreparedDraw* prepared = nullptr,
+                                                bool no_skip = false);
 
     /// theatrhythm: worker side of draw preparation: selects the pipeline key for `sel.regs` without
     /// creating anything. False when a program or permutation does not exist yet.
