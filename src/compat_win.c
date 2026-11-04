@@ -99,6 +99,21 @@ long compat_utc_offset(time_t t) {
     return as_local == (time_t)-1 ? 0 : (long)(t - as_local);
 }
 
+long compat_zone(time_t t, int *isdst, long *zone_dst) {
+    struct tm local;
+    int daylight = 0;
+    long west = 0, bias = 0, offset = compat_utc_offset(t);
+    /* localtime_s loads the zone first. In summer time the amount is the offset beyond the
+     * standard one; otherwise the (negative) summer time bias, which the CRT leaves stale when TZ
+     * changes after the zone was first loaded, so an hour when it reads 0. */
+    *isdst = !localtime_s(&local, &t) && local.tm_isdst > 0;
+    _get_daylight(&daylight);
+    _get_timezone(&west);
+    _get_dstbias(&bias);
+    *zone_dst = *isdst ? offset + west : !daylight ? 0 : bias ? -bias : 3600;
+    return offset;
+}
+
 int compat_random(void *buffer, size_t size) {
     while (size) {
         ULONG chunk = size > 0x10000000u ? 0x10000000u : (ULONG)size;

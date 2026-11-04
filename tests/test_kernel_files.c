@@ -6,6 +6,14 @@
 #include <assert.h>
 #include <sys/stat.h>
 
+/* The process time zone, as a POSIX TZ string. */
+static void set_zone(const char *zone) {
+#ifdef _WIN32
+    _putenv_s("TZ",zone); _tzset();
+#else
+    setenv("TZ",zone,1); tzset();
+#endif
+}
 int32_t *runtime_errno(void) { static int32_t value; return &value; }
 void runtime_report(void) {}
 void runtime_thread_count_yield(int zero_sleep) { (void)zero_sleep; }
@@ -30,6 +38,9 @@ int64_t runtime_file_getdents(int fd, char *buffer, uint64_t size, int64_t *base
 }
 
 int main(void) {
+    /* Before anything loads the zone: the Windows CRT keeps the machine zone's summer time bias
+     * when TZ changes later. */
+    set_zone("EST5EDT");
     char path[512];
     mkdir("out",0755); mkdir(root,0755);
     snprintf(path,sizeof(path),"%s/file.bin",root);
@@ -63,16 +74,28 @@ int main(void) {
     assert(kernel_getdents(3,buffer,sizeof(buffer))==512 && last_getdents_fd==3);
     assert(kernel_getdents(6,buffer,sizeof(buffer))==ERR(9));
 
-    /* UTC <-> local: the two conversions are inverse and agree with sceKernelGettimezone. */
-    const int64_t utc=1700000000;
-    int64_t local=0, back=0; GuestTimesec st; uint64_t dst=7;
-    assert(kernel_utc_to_local(utc,NULL,NULL,NULL)==ERR(22));
-    assert(kernel_utc_to_local(utc,&local,&st,&dst)==0 && st.t==utc && dst==0 && st.dst_sec==0);
-    assert(local-utc==(int64_t)(int32_t)st.west_sec);
-    GuestTimezone tz; int32_t dst_seconds=-1;
-    assert(kernel_local_to_utc(local,0,&back,NULL,NULL)==ERR(22));
-    assert(kernel_local_to_utc(local,0,&back,&tz,&dst_seconds)==0 && back==utc && dst_seconds==0);
-    assert(tz.minuteswest==(int32_t)(-(local-utc)/60));
+    /* UTC <-> local: the two conversions are inverse; west_sec is the standard offset and dst_sec
+     * the summer time in effect, so libc's mktime and localtime see summer time (US Eastern time,
+     * where 2026-01-15 is winter and 2026-07-15 summer), and a zone without it. */
+    const int64_t winter=1768478400, summer=1784116800; /* 12:00 UTC */
+    int64_t local=0, back=0; GuestTimesec st; uint64_t dst=7; int32_t dst_seconds=-1;
+    assert(kernel_utc_to_local(winter,NULL,NULL,NULL)==ERR(22));
+    assert(kernel_local_to_utc(winter,0,&back,NULL,NULL)==ERR(22));
+    assert(kernel_utc_to_local(winter,&local,&st,&dst)==0 && local==winter-5*3600 && st.t==winter);
+    assert(st.west_sec==-5*3600 && st.dst_sec==0 && dst==0);
+    assert(kernel_local_to_utc(local,0,&back,&st,&dst_seconds)==0 && back==winter && st.t==winter);
+    assert(st.west_sec==-5*3600 && st.dst_sec==0 && dst_seconds==3600);
+    assert(kernel_utc_to_local(summer,&local,&st,&dst)==0 && local==summer-4*3600);
+    assert(st.west_sec==-5*3600 && st.dst_sec==3600 && dst==3600);
+    assert(kernel_local_to_utc(local,1,&back,&st,&dst_seconds)==0 && back==summer);
+    assert(st.west_sec==-5*3600 && st.dst_sec==3600 && dst_seconds==3600);
+    /* 02:30 on 2026-03-08 does not exist there: any answer within the hour, but an answer. */
+    const int64_t gap=1772937000;
+    assert(kernel_local_to_utc(gap,0,&back,&st,&dst_seconds)==0 && llabs(back-(gap+5*3600))<=3600);
+    set_zone("SGT-8");
+    assert(kernel_utc_to_local(summer,&local,&st,&dst)==0 && local==summer+8*3600);
+    assert(st.west_sec==8*3600 && st.dst_sec==0 && dst==0);
+    assert(kernel_local_to_utc(local,0,&back,&st,&dst_seconds)==0 && back==summer && dst_seconds==0);
 
     /* Development-kit LEDs and libc's internal segment. */
     uint64_t info[2]={1,2};

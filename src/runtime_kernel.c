@@ -142,35 +142,55 @@ static ABI int32_t kernel_gettimeofday(GuestTimeval *tv) {
 static ABI int64_t posix_time(int64_t *out) { int64_t t=(int64_t)time(NULL); if (out) *out=t; return t; }
 /* sceKernelSleep(seconds): sceKernelUsleep of the whole seconds (shadPS4 time.cpp). */
 static ABI int32_t kernel_sleep(uint32_t seconds) { sleep_ns((uint64_t)seconds*1000000000); return 0; }
-/* Seconds east of UTC at `t` (local time). */
-static int64_t utc_offset(time_t t) {
+/* The zone at UTC time t as libkernel splits it: the standard offset east of UTC, the summer time
+ * in effect (0 outside it) and the zone's summer time amount (0 for a zone without one). */
+typedef struct { int64_t standard, dst, zone_dst; } GuestZone;
+static GuestZone zone_at(time_t t) {
+    GuestZone z; int isdst; long offset, zone_dst;
 #ifdef _WIN32
-    return compat_utc_offset(t);
+    offset=compat_zone(t,&isdst,&zone_dst);
 #else
-    struct tm local; localtime_r(&t,&local); return local.tm_gmtoff;
+    static pthread_once_t once=PTHREAD_ONCE_INIT;
+    pthread_once(&once,tzset);
+    struct tm local; localtime_r(&t,&local);
+    offset=local.tm_gmtoff; isdst=local.tm_isdst>0;
+    zone_dst=isdst ? offset+timezone : (daylight ? 3600 : 0);
 #endif
+    z.zone_dst=zone_dst; z.dst=isdst ? zone_dst : 0; z.standard=offset-z.dst;
+    return z;
 }
 /* sceKernelConvertUtcToLocaltime(utc, local, timesec{t, west_sec, dst_sec}, dst_sec): local =
- * utc + the zone offset. As sceKernelGettimezone, the offset includes summer time and dst is 0;
- * west_sec carries the offset east of UTC, as libkernel fills it (shadPS4 time.cpp). */
-typedef struct { int64_t t; uint32_t west_sec, dst_sec; } GuestTimesec;
+ * utc + west_sec + dst_sec, where west_sec is the standard offset east of UTC and dst_sec the
+ * summer time in effect. libc's localtime sets tm_isdst from dst_sec != 0. */
+typedef struct { int64_t t; int32_t west_sec, dst_sec; } GuestTimesec;
 static ABI int32_t kernel_utc_to_local(int64_t utc,int64_t *local,GuestTimesec *st,uint64_t *dst) {
     if (!local) return ERR(22);
-    int64_t offset=utc_offset((time_t)utc);
-    *local=utc+offset;
-    if (st) { st->t=utc; st->west_sec=(uint32_t)offset; st->dst_sec=0; }
-    if (dst) *dst=0;
+    GuestZone z=zone_at((time_t)utc);
+    *local=utc+z.standard+z.dst;
+    if (st) { st->t=utc; st->west_sec=(int32_t)z.standard; st->dst_sec=(int32_t)z.dst; }
+    if (dst) *dst=(uint64_t)z.dst;
     return 0;
 }
-/* sceKernelConvertLocaltimeToUtc(local, reserved, utc, timezone, dst_seconds): the zone is required
- * (EINVAL) and filled as sceKernelGettimezone; utc = local + minuteswest*60. */
-static ABI int32_t kernel_local_to_utc(int64_t local,int64_t reserved,int64_t *utc,GuestTimezone *tz,int32_t *dst) {
-    (void)reserved;
-    if (!tz) return ERR(22);
-    kernel_gettimezone(tz);
-    tz->minuteswest=(int32_t)(-utc_offset((time_t)local)/60);
-    if (utc) *utc=local+(int64_t)tz->minuteswest*60;
-    if (dst) *dst=tz->dsttime*60;
+/* sceKernelConvertLocaltimeToUtc(local, isdst, utc, timesec, dst_seconds): the UTC time whose
+ * local time is `local`, with timesec filled for it as sceKernelConvertUtcToLocaltime does and
+ * dst_seconds the zone's summer time amount; timesec is required (EINVAL). libc's mktime applies
+ * tm_isdst itself: it converts back and adds or removes dst_seconds when the two disagree, so a
+ * local time inside the spring gap needs no exact answer here. */
+static ABI int32_t kernel_local_to_utc(int64_t local,int64_t isdst,int64_t *utc,GuestTimesec *st,int32_t *dst) {
+    (void)isdst;
+    if (!st) return ERR(22);
+    GuestZone z=zone_at((time_t)local);
+    int64_t guess=local-z.standard-z.dst;
+    for (int i=0;i<2;i++) {
+        GuestZone at=zone_at((time_t)guess);
+        int64_t next=local-at.standard-at.dst;
+        if (next==guess) break;
+        guess=next;
+    }
+    z=zone_at((time_t)guess);
+    if (utc) *utc=guess;
+    st->t=guess; st->west_sec=(int32_t)z.standard; st->dst_sec=(int32_t)z.dst;
+    if (dst) *dst=(int32_t)z.zone_dst;
     return 0;
 }
 

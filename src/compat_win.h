@@ -61,6 +61,9 @@ static inline char *compat_realpath(const char *path, char *out) { return _fullp
 
 /* Seconds east of UTC at time t (struct tm has no tm_gmtoff on Windows). */
 long compat_utc_offset(time_t t);
+/* As compat_utc_offset, plus whether summer time is in effect at t and the zone's summer time
+ * amount in seconds (0 for a zone without one). Both follow TZ when it is set. */
+long compat_zone(time_t t, int *isdst, long *zone_dst);
 /* Cryptographic random bytes; 0 or -1. */
 int compat_random(void *buffer, size_t size);
 /* Sleeps with sub-millisecond precision (high-resolution waitable timer; winpthreads'
