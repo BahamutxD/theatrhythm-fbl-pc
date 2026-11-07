@@ -290,11 +290,19 @@ extern "C" int theatrhythm_gpu_init(const TheatrhythmGpuConfig* config) {
             SDL_Delay(2);
         }
         LOG_INFO(Frontend, "Window closed by user");
+        TheatrhythmSettings::SaveDisplayIfChanged();
         runtime_report();
         std::fflush(stdout);
         std::_Exit(0);
     });
     g_window_thread.detach();
+    // The PS4 shows the game's pic1.png while it starts; decoded while the window opens.
+    if (config->splash) {
+        TheatrhythmPng::Image splash;
+        if (TheatrhythmPng::LoadRgba(config->splash, splash)) {
+            TheatrhythmOverlay::SetSplash(std::move(splash));
+        }
+    }
     {
         std::unique_lock lock{g_window_mutex};
         g_window_cv.wait(lock, [] { return g_window_ready; });
@@ -439,6 +447,16 @@ extern "C" void theatrhythm_display_settings_open(void) {
 
 extern "C" int theatrhythm_display_settings_is_open(void) {
     return TheatrhythmOverlay::DisplaySettingsOpen() ? 1 : 0;
+}
+
+extern "C" int theatrhythm_gpu_take_exit_request(void) {
+    return TheatrhythmOverlay::TakeExitRequest() ? 1 : 0;
+}
+
+extern "C" void theatrhythm_gpu_request_quit(void) {
+    SDL_Event event{};
+    event.type = SDL_EVENT_QUIT; // the window thread ends the process as when the window is closed
+    SDL_PushEvent(&event);
 }
 
 extern "C" int theatrhythm_display_get(int setting) {

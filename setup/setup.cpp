@@ -280,7 +280,7 @@ std::wstring strip(const std::wstring& s) {
     return s.substr(a, s.find_last_not_of(ws) - a + 1);
 }
 
-void write_paths(const fs::path& ini, const fs::path& game, const fs::path& save) {
+void write_paths(const fs::path& ini, const fs::path& game, const fs::path& save, const fs::path& dlc) {
 #ifdef _WIN32
     const std::string setup = "theatrhythm-setup.exe", cache = "%LOCALAPPDATA%\\Theatrhythm Final Bar Line";
 #else
@@ -290,11 +290,67 @@ void write_paths(const fs::path& ini, const fs::path& game, const fs::path& save
     write_text(ini, "; Written by " + setup + ". Run it again to change these folders." + nl +
                     "; game: your dump (eboot.bin, sce_module, sce_sys, Media). It is only ever read." + nl +
                     "; save: your saves, and theatrhythm.log in its log folder." + nl +
+                    "; dlc: optional, one more folder of DLC (e.g. shadPS4's addcont), next to save's addcont." + nl +
                     "; Shader caches are shared by every copy of the game: " + cache + nl +
                     "; (cache=<folder> moves them)." + nl +
                     "[paths]" + nl +
                     "game=" + narrow(text(game)) + nl +
-                    "save=" + narrow(text(save)) + nl);
+                    "save=" + narrow(text(save)) + nl +
+                    (dlc.empty() ? std::string() : "dlc=" + narrow(text(dlc)) + nl));
+}
+
+// The key of a settings.ini line ("key=value", gpu/shim/theatrhythm_settings.cpp), lower case; empty
+// for comments and other lines.
+std::wstring setting_key(std::string_view line) {
+    size_t eq = line.find('=');
+    std::wstring key = eq == std::string_view::npos ? std::wstring() : lower(strip(widen(line.substr(0, eq))));
+    return !key.empty() && key[0] != L'#' && key[0] != L';' ? key : std::wstring();
+}
+
+// `key`'s value in a settings.ini: the last line that sets it wins, as in the game.
+std::optional<std::wstring> read_setting(const fs::path& ini, const std::wstring& key) {
+    std::error_code ec;
+    if (!fs::is_regular_file(ini, ec))
+        return std::nullopt;
+    std::string text = read_text(ini);
+    std::optional<std::wstring> value;
+    for (size_t start = 0; start < text.size();) {
+        size_t end = text.find('\n', start);
+        std::string_view line = std::string_view(text).substr(start, end == std::string::npos ? end : end - start);
+        start = end == std::string::npos ? text.size() : end + 1;
+        if (setting_key(line) == key)
+            value = strip(widen(line.substr(line.find('=') + 1)));
+    }
+    return value;
+}
+
+// Sets `key` in a settings.ini: its first line is replaced and any later ones dropped, or the line is
+// added at the end. The other lines and their line endings stay.
+void write_setting(const fs::path& ini, const std::wstring& key, const std::wstring& value) {
+    std::string text = read_text(ini), out, line_text = narrow(key) + "=" + narrow(value);
+    bool done = false;
+    for (size_t start = 0; start < text.size();) {
+        size_t end = text.find('\n', start);
+        std::string_view line = std::string_view(text).substr(start, end == std::string::npos ? end : end - start);
+        start = end == std::string::npos ? text.size() : end + 1;
+        bool cr = !line.empty() && line.back() == '\r';
+        if (setting_key(line) == key) {
+            if (done)
+                continue;
+            out += line_text + (cr ? "\r" : "");
+            done = true;
+        } else {
+            out += line;
+        }
+        if (end != std::string::npos)
+            out += '\n';
+    }
+    if (!done) {
+        if (!out.empty() && out.back() != '\n')
+            out += kNewline;
+        out += line_text + kNewline;
+    }
+    write_text(ini, out);
 }
 
 #ifndef _WIN32
@@ -425,10 +481,22 @@ fs::path game_folder(const fs::path& path) {
     return fs::is_regular_file(p, ec) ? p.parent_path() : p;
 }
 
-std::optional<Paths> read_paths(const fs::path& root) {
+fs::path user_paths_ini() {
+#ifdef _WIN32
+    const wchar_t* appdata = _wgetenv(L"APPDATA");
+    return appdata && appdata[0] ? fs::path(appdata) / L"Theatrhythm Final Bar Line" / L"paths.ini" : fs::path();
+#else
+    const char* config = std::getenv("XDG_CONFIG_HOME");
+    return (config && config[0] ? fs::path(config) : home() / ".config") / "theatrhythm-fbl" / "paths.ini";
+#endif
+}
+
+namespace {
+
+// game=, save= and dlc= of `ini`; relative values are relative to `root`.
+std::optional<Paths> read_paths_file(const fs::path& ini, const fs::path& root) {
     std::error_code ec;
-    fs::path ini = root / L"paths.ini";
-    if (!fs::is_regular_file(ini, ec))
+    if (ini.empty() || !fs::is_regular_file(ini, ec))
         return std::nullopt;
     std::string text = read_text(ini);
     if (text.rfind("\xEF\xBB\xBF", 0) == 0)
@@ -449,10 +517,28 @@ std::optional<Paths> read_paths(const fs::path& root) {
             paths.game = clean(root / path_of(value));
         else if (key == L"save")
             paths.save = clean(root / path_of(value));
+        else if (key == L"dlc")
+            paths.dlc = clean(root / path_of(value));
     }
     if (paths.game.empty() || paths.save.empty())
         return std::nullopt;
     return paths;
+}
+
+} // namespace
+
+std::optional<Paths> read_paths(const fs::path& root) {
+    return read_paths_file(root / L"paths.ini", root);
+}
+
+std::optional<Paths> remembered_paths(const fs::path& root) {
+    if (auto paths = read_paths(root))
+        return paths;
+    try {
+        return read_paths_file(user_paths_ini(), root);
+    } catch (const Error&) {
+        return std::nullopt;
+    }
 }
 
 fs::path default_save() {
@@ -470,6 +556,20 @@ bool ready(const fs::path& root) {
     }
 }
 
+bool skip_opening(const fs::path& root, const fs::path& save) {
+    std::error_code ec;
+    fs::path ini = save / L"settings.ini";
+    if (!fs::is_regular_file(ini, ec))
+        ini = root / L"settings.ini";
+    try {
+        std::optional<std::wstring> value = read_setting(ini, L"skip_opening");
+        std::wstring v = value ? lower(*value) : L"";
+        return v == L"1" || v == L"true" || v == L"yes" || v == L"on";
+    } catch (const Error&) {
+        return false;
+    }
+}
+
 bool has_saves(const fs::path& save) {
     std::error_code ec;
     fs::path data = save / L"savedata";
@@ -478,11 +578,17 @@ bool has_saves(const fs::path& save) {
 
 fs::path install(const Options& opt, const Log& log) {
     fs::path root = clean(opt.root), game = game_folder(opt.game), save = clean(opt.save);
+    fs::path dlc = opt.dlc.empty() ? fs::path() : clean(opt.dlc);
     fs::path prepare = root / L"prepare", image = root / L"game", exe = root / kGameExe;
     if (inside(save, game))
         fail(L"Choose a save folder outside the game folder. Setup never writes into the game folder.");
     if (inside(root, game) || inside(game, root))
         fail(L"Keep the game folder and this folder apart (neither inside the other).");
+    std::error_code dlc_ec;
+    if (!dlc.empty() && !fs::is_directory(dlc, dlc_ec))
+        fail(L"The DLC folder does not exist:\n" + text(dlc) + L"\n\nChoose another one, or leave it empty.");
+    if (!dlc.empty() && same_path(dlc, save / L"addcont"))
+        dlc.clear(); // the save folder's addcont is always read
 
     std::error_code ec;
     std::vector<std::wstring> missing;
@@ -552,8 +658,30 @@ fs::path install(const Options& opt, const Log& log) {
         }
         log(L"copied   saves from " + text(*opt.copy_saves_from));
     }
-    write_paths(root / L"paths.ini", game, save);
-    log(L"wrote    paths.ini (game " + text(game) + L", save " + text(save) + L")");
+    // The game reads the save folder's settings.ini once it has one (the in-game Display Settings
+    // write it), else this folder's: set both.
+    if (opt.skip_opening) {
+        const std::wstring value = *opt.skip_opening ? L"1" : L"0";
+        for (const fs::path& ini : {settings, save / L"settings.ini"}) {
+            if (!fs::is_regular_file(ini, ec))
+                continue;
+            write_setting(ini, L"skip_opening", value);
+            log(L"set      skip_opening=" + value + L" in " + text(ini));
+        }
+    }
+    write_paths(root / L"paths.ini", game, save, dlc);
+    log(L"wrote    paths.ini (game " + text(game) + L", save " + text(save) +
+        (dlc.empty() ? L"" : L", dlc " + text(dlc)) + L")");
+    // The per-user copy, for the next release unpacked elsewhere; the game runs without it.
+    if (fs::path user = user_paths_ini(); !user.empty()) {
+        try {
+            fs::create_directories(user.parent_path(), ec);
+            write_paths(user, clean(game), clean(save), dlc);
+            log(L"wrote    " + text(user));
+        } catch (const Error& e) {
+            log(L"skipped  " + text(user) + L" (" + e.message + L")");
+        }
+    }
     return exe;
 }
 

@@ -7,7 +7,8 @@
     python run.py prepare    rebuild the game image only
 
 Options: --game DIR (the decrypted dump; default THEATRHYTHM_GAME_DIR), --timeout SECONDS (play only),
---out DIR (the game image, default out/game). Other arguments go to theatrhythm-fbl. Saves land in
+--out DIR (the game image, default out/game), --dlc DIR (one more folder of DLC next to the save's
+addcont, e.g. shadPS4's addcont; default THEATRHYTHM_DLC_DIR). Other arguments go to theatrhythm-fbl. Saves land in
 user/, shader caches in the folder every copy of the game shares (shared_cache_dir), options in
 user/settings.ini, or settings.ini here until that exists (see settings.example.ini).
 """
@@ -72,11 +73,11 @@ def image_is_current(game, out):
     linked = out / 'boot-linked.bin'
     if not linked.is_file() or not (out / 'content.bin').is_file():
         return False
-    if not (out / 'button_icons').is_dir() or not (out / 'config_icon').is_dir():
+    if not all((out / folder).is_dir() for folder in ('button_icons', 'config_icon', 'controller_pad')):
         return False
     built = linked.stat().st_mtime
     sources = [game / name for name in IMAGE_INPUTS] + list((PORT / 'scripts').glob('*.py'))
-    sources += [path for folder in ('button_icons', 'config_icon') for path in (PORT / 'assets' / folder).glob('*.bc7')]
+    sources += [path for folder in ('button_icons', 'config_icon', 'controller_pad') for path in (PORT / 'assets' / folder).glob('*.bc7')]
     sources += [path for folder in IMAGE_MODULE_DIRS for path in (game / folder).glob('*.prx')]
     return all(not path.is_file() or path.stat().st_mtime < built for path in sources)
 
@@ -92,6 +93,7 @@ def prepare(game, out, force=False):
     run_script('content_profile.py', game, '--out', out, '--sku', 'full')
     run_script('button_icons.py', game, '--out', out)
     run_script('config_icon.py', game, '--out', out)
+    run_script('controller_pad.py', game, '--out', out)
 
 
 def find_probe():
@@ -124,7 +126,7 @@ def check(probe, out):
     return 1 if missing else 0
 
 
-def play(probe, game, out, timeout, user, extra):
+def play(probe, game, out, timeout, user, extra, dlc=None):
     env = os.environ
     features = subprocess.run([str(probe), '--cpu-features'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
     if features.returncode == 20:
@@ -138,7 +140,8 @@ def play(probe, game, out, timeout, user, extra):
     env.setdefault('THEATRHYTHM_CONFIG', str(user / 'settings.ini'))
     env.setdefault('THEATRHYTHM_CONFIG_DEFAULT', str(PORT / 'settings.ini'))
     command = [str(probe), str(out / 'boot-linked.bin'), '--content-profile', str(out / 'content.bin'),
-               '--app0', str(game), '--user', str(user), '--timeout', str(timeout), *isa_args, *extra]
+               '--app0', str(game), '--user', str(user), '--timeout', str(timeout), *isa_args,
+               *(['--dlc', str(dlc)] if dlc else []), *extra]
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL)
     try:
         return process.wait()
@@ -154,6 +157,8 @@ def main():
     p.add_argument('--timeout', type=int, default=int(os.environ.get('THEATRHYTHM_TIMEOUT', '0')))
     p.add_argument('--user', type=Path, default=PORT / 'user', help='saves, temp0 and data (default: user/)')
     p.add_argument('--out', type=Path, default=PORT / 'out' / 'game', help='the game image (default: out/game)')
+    p.add_argument('--dlc', type=Path, default=os.environ.get('THEATRHYTHM_DLC_DIR') or None,
+                   help="one more folder of DLC, next to the save's addcont (e.g. shadPS4's addcont)")
     a, extra = p.parse_known_args()
     if a.game is None:
         fail('Pass the decrypted game dump with --game DIR or set THEATRHYTHM_GAME_DIR.')
@@ -175,7 +180,7 @@ def main():
     os.environ.setdefault('THEATRHYTHM_VERBOSE', '1')
     if a.command == 'check':
         return check(probe, out)
-    return play(probe, game, out, a.timeout, user, extra)
+    return play(probe, game, out, a.timeout, user, extra, a.dlc.resolve() if a.dlc else None)
 
 
 if __name__ == '__main__':

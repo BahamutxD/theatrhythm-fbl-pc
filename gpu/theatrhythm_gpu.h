@@ -13,6 +13,7 @@ typedef struct {
     uint32_t sdk_version;       /* from the eboot's procparam */
     uint32_t psf_attributes;    /* param.sfo ATTRIBUTE */
     int32_t width, height;      /* initial window size */
+    const char *splash;         /* start-up picture (the dump's sce_sys/pic1.png), NULL: none */
 } TheatrhythmGpuConfig;
 /* Registers kernel event queues (needed with or without graphics). */
 void theatrhythm_gpu_register_kernel(void);
@@ -41,6 +42,10 @@ int theatrhythm_gpu_overlay_captures_input(void);
 /* Opens the Display Settings panel (the Options menu's Display Settings button); 1 while it is open. */
 void theatrhythm_display_settings_open(void);
 int theatrhythm_display_settings_is_open(void);
+/* 1 once per press of F4 (the game's "Exit the game?" window, runtime_exit_prompt.c); any thread. */
+int theatrhythm_gpu_take_exit_request(void);
+/* Ends the game as closing its window does (any thread). */
+void theatrhythm_gpu_request_quit(void);
 /* The Options menu's Display Settings page (runtime_display_page.c). get: a setting's value (window
  * mode 0 windowed, 1 borderless, 2 fullscreen; resolution: index into the sizes, largest first;
  * VSync 0/1, off keeping the tearing choice; frame rate limit in FPS, 0 one per vblank, -1 unlimited).
@@ -66,6 +71,9 @@ const char *theatrhythm_button_icons(void);
 /* 1 when settings.ini render_resolution (THEATRHYTHM_RENDER_RESOLUTION) is 4k: the game runs in PS4
  * Pro mode with a 3840x2160 video out. Valid once theatrhythm_gpu_init returned. */
 int theatrhythm_render_4k(void);
+/* 1 when settings.ini skip_opening (THEATRHYTHM_SKIP_OPENING) is on: the start goes from the logo to
+ * the title screen without the opening movie. Valid once theatrhythm_gpu_init returned. */
+int theatrhythm_skip_opening(void);
 /* sceCommonDialogInitialize ran (runtime_services.c): the upstream dialog libraries check it. */
 void theatrhythm_gpu_common_dialog_initialized(void);
 /* Master volume of the game's audio (settings.ini master_volume), 0 to 200 percent (100: the
@@ -80,6 +88,8 @@ unsigned theatrhythm_gpu_symbol_count(void);
 unsigned long long theatrhythm_gpu_copy_yields(void);
 /* Frames handed to the presenter since start (hang dump). */
 unsigned long long theatrhythm_gpu_flips(void);
+/* A notice in the corner for `milliseconds` (any thread; the runtime's messages to the player). */
+void theatrhythm_gpu_notice(const char *text, int milliseconds);
 /* Trophy unlocked (any thread): its name as a notice in the corner. The other arguments are kept
  * for the runtime's call: id, description and PNG icon. */
 void theatrhythm_gpu_toast_trophy(int id, const char *title, const char *detail, const unsigned char *png,

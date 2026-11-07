@@ -572,13 +572,15 @@ static int cpu_supported(char *missing, size_t size) {
     return 1;
 }
 
-/* settings.ini button_icons: the icon files scripts/button_icons.py wrote next to boot.bin. */
+/* settings.ini button_icons: the icon and pad files scripts/button_icons.py and
+ * scripts/controller_pad.py wrote next to boot.bin. */
 static void configure_button_icons(const char *boot) {
     const char *slash=strrchr(boot,'/'), *back=strrchr(boot,'\\');
     if (back && (!slash || back>slash)) slash=back;
-    char folder[512];
-    snprintf(folder,sizeof(folder),"%.*sbutton_icons",slash ? (int)(slash-boot+1) : 0,boot);
-    runtime_button_icons_configure(folder,theatrhythm_button_icons());
+    char icons[512], pad[512];
+    snprintf(icons,sizeof(icons),"%.*sbutton_icons",slash ? (int)(slash-boot+1) : 0,boot);
+    snprintf(pad,sizeof(pad),"%.*scontroller_pad",slash ? (int)(slash-boot+1) : 0,boot);
+    runtime_button_icons_configure(icons,pad,theatrhythm_button_icons());
 }
 
 /* Display Settings icon in the Options menu: the Config atlas bundle scripts/config_icon.py wrote
@@ -666,7 +668,7 @@ int main(int argc, char **argv) {
 #endif
     int cpu_only = 0, strict_imports = 0, check_imports = 0, monitor_icon = 0;
     unsigned timeout_seconds = 10;
-    const char *content_profile=NULL, *app0=NULL, *user_dir=NULL, *isa_file=NULL;
+    const char *content_profile=NULL, *app0=NULL, *user_dir=NULL, *isa_file=NULL, *dlc_dir=NULL;
     const char *mounts[24]; int mount_count=0;  /* --mount guest=host: one game file or folder each */
     for (int i = 2; i < argc; ++i) {
         if (!strcmp(argv[i], "--cpu-only")) cpu_only = 1;
@@ -675,6 +677,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--content-profile") && i+1<argc) content_profile=argv[++i];
         else if (!strcmp(argv[i], "--app0") && i+1<argc) app0=argv[++i];
         else if (!strcmp(argv[i], "--user") && i+1<argc) user_dir=argv[++i];
+        else if (!strcmp(argv[i], "--dlc") && i+1<argc) dlc_dir=argv[++i];
         else if (!strcmp(argv[i], "--isa-rewrite") && i+1<argc) isa_file=argv[++i];
         else if (!strcmp(argv[i], "--mount") && i+1<argc) {
             /* guest=host; the guest part never has '=', so the first one splits */
@@ -686,7 +689,7 @@ int main(int argc, char **argv) {
         else { fprintf(stderr, "Unknown option: %s\n", argv[i]); return 1; }
     }
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s boot.bin [--cpu-only] [--strict-imports] [--check-imports] [--content-profile file] [--app0 dir] [--user dir] [--isa-rewrite file] [--mount guest=host]... [--timeout seconds] | --vulkan-only | --cpu-features | --gamepad\n", argv[0]);
+        fprintf(stderr, "Usage: %s boot.bin [--cpu-only] [--strict-imports] [--check-imports] [--content-profile file] [--app0 dir] [--user dir] [--dlc dir] [--isa-rewrite file] [--mount guest=host]... [--timeout seconds] | --vulkan-only | --cpu-features | --gamepad\n", argv[0]);
         return 1;
     }
     if (!cpu_supported(missing, sizeof missing)) return 20;
@@ -733,10 +736,14 @@ int main(int argc, char **argv) {
             if (runtime_file_mount(guest, eq + 1)) { fprintf(stderr, "Cannot mount %s: too many mounts or host path longer than 511 characters\n", mounts[i]); return 1; }
             printf("Runtime: mount %s -> %s\n", guest, eq + 1);
         }
-        char sfo[4096], id[16]="";
+        char sfo[4096], id[16]="", title_id[16]="", version[16]="";
         snprintf(sfo,sizeof(sfo),"%s/sce_sys/param.sfo",app0);
         if (sfo_value(sfo,"INSTALL_DIR_SAVEDATA",id,sizeof(id),NULL) || sfo_value(sfo,"TITLE_ID",id,sizeof(id),NULL))
             runtime_savedata_configure(id);
+        sfo_value(sfo,"TITLE_ID",title_id,sizeof(title_id),NULL);
+        sfo_value(sfo,"APP_VER",version,sizeof(version),NULL); /* the patch's version (VERSION stays the disc's) */
+        runtime_game_identify(title_id,version,app0,argv[1]);
+        if (dlc_dir && dlc_dir[0]) runtime_content_extra_dir(dlc_dir, title_id[0] ? title_id : NULL);
     }
     theatrhythm_gpu_register_kernel();
 #ifdef _WIN32
@@ -911,9 +918,11 @@ int main(int argc, char **argv) {
     if (!isa_table && cpu_missing_sets) { printf("STOP: this CPU lacks %s and no rewrite table matches the image\n", missing); return 20; }
     /* The stubs follow the image in the same low mapping (rel32 jmps reach them). */
     size_t stub_area = isa_table ? round_page(isa_stub_area_size(isa_table)) : 0;
-    /* Three more pages after them: the Display Settings page's hook stubs (runtime_display_page.c),
-     * the field walk's stub (runtime_field_walk.c) and the DLC bonus row's (runtime_dlc_bonus.c). */
-    image = allocate(round_page(size) + stub_area + 3 * page_size);
+    /* Six more pages after them: the Display Settings page's hook stubs (runtime_display_page.c),
+     * the field walk's stub (runtime_field_walk.c), the DLC bonus row's (runtime_dlc_bonus.c), the
+     * Xbox pad's (runtime_xbox_pad.c), the opening skip's (runtime_skip_opening.c) and the exit
+     * prompt's (runtime_exit_prompt.c). */
+    image = allocate(round_page(size) + stub_area + 6 * page_size);
     printf("Runtime: guest image at %p (guest offsets are relative to it)\n", (void *)image);
     unsigned char *stubs = image + round_page(size);
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
@@ -932,7 +941,10 @@ int main(int argc, char **argv) {
         runtime_kernel_set_psf_attributes(attributes);
         uint64_t sdk=0;
         if (procparam) memcpy(&sdk,image+procparam+16,8); /* procparam: size, magic, count, sdk_version */
-        TheatrhythmGpuConfig gpu={title,serial,user_dir ? user_dir : "user",(uint32_t)sdk,attributes,1920,1080};
+        char splash[4096];
+        snprintf(splash,sizeof(splash),"%s/sce_sys/pic1.png",app0 ? app0 : ".");
+        TheatrhythmGpuConfig gpu={title,serial,user_dir ? user_dir : "user",(uint32_t)sdk,attributes,1920,1080,
+                                  app0 ? splash : NULL};
         gpu_enabled=1; /* page tracking starts while the rasterizer registers guest memory */
         if (theatrhythm_gpu_init(&gpu)) fail("GPU initialization failed");
         printf("GPU: window and Vulkan presenter ready; SDK 0x%08x, %u HLE symbols\n",(unsigned)sdk,theatrhythm_gpu_symbol_count());
@@ -993,9 +1005,15 @@ int main(int argc, char **argv) {
     if (!cpu_only) {
         unsigned char *hook_stub = stubs + stub_area;
         for (uint64_t m = 0; m < module_count; ++m)
+            if (!strcmp(modules[m].name, "Il2CppUserAssemblies.prx"))
+                runtime_game_code_open(image + modules[m].base, modules[m].size, modules[m].seg0_size, app0);
+        int display_page = 0;
+        for (uint64_t m = 0; m < module_count; ++m)
             if (!strcmp(modules[m].name, "Il2CppUserAssemblies.prx") &&
-                !runtime_display_page_install(image, modules[m].base, hook_stub, page_size, monitor_icon))
+                !runtime_display_page_install(image, modules[m].base, hook_stub, page_size, monitor_icon)) {
                 protect(hook_stub, page_size, 5);
+                display_page = 1;
+            }
         unsigned char *walk_stub = hook_stub + page_size;
         for (uint64_t m = 0; m < module_count; ++m)
             if (!strcmp(modules[m].name, "Il2CppUserAssemblies.prx") &&
@@ -1006,6 +1024,22 @@ int main(int argc, char **argv) {
             if (!strcmp(modules[m].name, "Il2CppUserAssemblies.prx") &&
                 !runtime_dlc_bonus_install(image, modules[m].base, bonus_stub, page_size))
                 protect(bonus_stub, page_size, 5);
+        unsigned char *pad_stub = bonus_stub + page_size;
+        for (uint64_t m = 0; m < module_count; ++m)
+            if (!strcmp(modules[m].name, "Il2CppUserAssemblies.prx") &&
+                !runtime_xbox_pad_install(image, modules[m].base, pad_stub, page_size))
+                protect(pad_stub, page_size, 5);
+        unsigned char *opening_stub = pad_stub + page_size;
+        for (uint64_t m = 0; m < module_count; ++m)
+            if (theatrhythm_skip_opening() && !strcmp(modules[m].name, "Il2CppUserAssemblies.prx") &&
+                !runtime_skip_opening_install(image, modules[m].base, opening_stub, page_size))
+                protect(opening_stub, page_size, 5);
+        unsigned char *exit_stub = opening_stub + page_size;
+        for (uint64_t m = 0; m < module_count; ++m)
+            if (!strcmp(modules[m].name, "Il2CppUserAssemblies.prx") &&
+                !runtime_exit_prompt_install(image, modules[m].base, exit_stub, page_size, display_page))
+                protect(exit_stub, page_size, 5);
+        runtime_game_code_close();
     }
 #ifdef _WIN32
     printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));

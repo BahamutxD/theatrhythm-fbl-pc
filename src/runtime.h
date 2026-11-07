@@ -43,11 +43,36 @@ void runtime_memory_read_backing(uintptr_t address, void *data, uint64_t size);
 void runtime_memory_visit_mapped(void (*visit)(uintptr_t address, const unsigned char *bytes, uint64_t size,
                                                void *context), void *context);
 void runtime_memory_invalidate(uintptr_t address, uint64_t size);
-/* Button prompt icons (runtime_button_icons.c): mode "ps4", "xbox", "keyboard" or "auto" (follows
- * the device the player last used, reported by the pad code); folder holds prepare's icon files. */
+/* Button prompt icons and the Live Info pad (runtime_button_icons.c): mode "ps4", "xbox", "keyboard"
+ * or "auto" (follows the device the player last used, reported by the pad code); the folders hold
+ * prepare's icon and pad files. runtime_button_icons_pad: the pad drawing the atlas shows now
+ * (BUTTON_ICONS_PS4 or BUTTON_ICONS_XBOX; keyboard players keep the DualShock 4). */
 enum { BUTTON_ICONS_PS4, BUTTON_ICONS_XBOX, BUTTON_ICONS_KEYBOARD, BUTTON_ICONS_SETS };
-void runtime_button_icons_configure(const char *folder, const char *mode);
+void runtime_button_icons_configure(const char *icons, const char *pad, const char *mode);
 void runtime_button_icons_input(int set);
+int runtime_button_icons_pad(void);
+/* The game code the runner patches, found by name and bytes in any game version
+ * (runtime_game_code.c, tools/game_code.py). A site: `method` "Namespace.Type/Nested::Method" in
+ * the IL2CPP metadata, and a pattern at its entry or (`inside`) once in its first 64 KiB; or method
+ * NULL, a pattern in the whole code that matches `instances` times (the site: match `instance` by
+ * address, entries 16-byte aligned unless `inside`). Patterns, the first that matches is used: hex
+ * bytes, ?? any byte, | the end of the (fixed) bytes a hook moves. */
+typedef struct {
+    const char *method;
+    unsigned char inside, instances, instance;
+    const char *patterns[3];
+} GameSite;
+typedef struct { uint64_t offset; unsigned moved; int pattern; } GameCode; /* module offset; bytes before |; which pattern */
+/* Logs "Game: ..." (param.sfo TITLE_ID and APP_VER, and the module's size and SHA-256 from
+ * link.json beside the image), and keeps the version for runtime_game_version (bug reports). */
+void runtime_game_identify(const char *title_id, const char *app_version, const char *app0, const char *image_path);
+const char *runtime_game_version(void);
+/* Il2CppUserAssemblies as mapped and relocated (base, size, code segment size) and the dump folder
+ * (its global-metadata.dat): before runtime_game_code_find; close frees the metadata. */
+void runtime_game_code_open(unsigned char *module, uint64_t size, uint64_t code_size, const char *app0);
+void runtime_game_code_close(void);
+/* Every site of `sites` into `found`: 0, or -1 after logging "<who>: <site> not found in game ...". */
+int runtime_game_code_find(const GameSite *sites, size_t count, GameCode *found, const char *who);
 /* Display Settings in the game's Options menu, and all nine display languages on its Language page
  * (runtime_display_page.c): hooks the game's code in the
  * image (still writable), with stubs written to `stubs` (`size` bytes, within rel32 reach of it);
@@ -61,6 +86,24 @@ int runtime_field_walk_install(unsigned char *image, uint64_t module_base, unsig
  * hides itself for a count of 0, with its stub written to `stubs` (`size` bytes, within rel32 reach
  * of the image, which is still writable). 0 when installed. */
 int runtime_dlc_bonus_install(unsigned char *image, uint64_t module_base, unsigned char *stubs, size_t size);
+/* The Live Info pad fitted to the Xbox drawing when the pad atlas shows it (runtime_xbox_pad.c):
+ * hooks MSGamePad's per-frame calls, with stubs written to `stubs` (`size` bytes, within rel32 reach
+ * of the image, which is still writable). 0 when installed. */
+int runtime_xbox_pad_install(unsigned char *image, uint64_t module_base, unsigned char *stubs, size_t size);
+/* settings.ini skip_opening (runtime_skip_opening.c): the first Opening scene after each start ends
+ * before its movie plays, so the logo leads to the title screen; stub written to `stubs` (`size`
+ * bytes, within rel32 reach of the image, which is still writable). 0 when installed. */
+int runtime_skip_opening_install(unsigned char *image, uint64_t module_base, unsigned char *stubs, size_t size);
+/* F4 opens the game's own Yes/No window asking "Exit the game?", and Yes ends the game
+ * (runtime_exit_prompt.c). Its text comes through the Display page's translation hook, so it
+ * installs only with `display_page` (that install returned 0). 0 when installed. */
+int runtime_exit_prompt_install(unsigned char *image, uint64_t module_base, unsigned char *stubs, size_t size, int display_page);
+/* The text the exit prompt shows for an I2 term while it is open, else NULL (translation hook). */
+const char *runtime_exit_prompt_translation(const char *term);
+/* 1 while the exit prompt's window is open (the pad turns Options into Circle there: No). */
+int runtime_exit_prompt_open(void);
+/* 1 while a save is mounted, backed up or written (runtime_savedata.c). */
+int runtime_savedata_busy(void);
 const char *runtime_import_name(const char *name);
 uintptr_t runtime_rwlock_resolve(const char *name);
 void runtime_rwlock_report(void);
@@ -116,6 +159,8 @@ void runtime_eventflag_report(void);
 unsigned runtime_sema_waiters(uint32_t id);
 uintptr_t runtime_time_resolve(const char *name);
 void runtime_content_configure(const uint32_t values[5]);
+/* An extra folder of add-ons next to <user>/addcont/ (its <title_id>/ subfolder when it has one). */
+void runtime_content_extra_dir(const char *folder,const char *title_id);
 uintptr_t runtime_content_resolve(const char *name);
 void runtime_content_report(void);
 typedef struct { const char *name; void *function; } RuntimeExport;

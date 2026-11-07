@@ -21,6 +21,10 @@ mkdir -p "$out"
 out=$(cd "$out" && pwd)
 FFMPEG_VERSION=${FFMPEG_VERSION:-9.0.2}
 FFMPEG_SHA256=${FFMPEG_SHA256:-8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e}
+FFMPEG_URL=${FFMPEG_URL:-https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz}
+# The same tag from FFmpeg's GitHub mirror (its RELEASE file gives the version), for when ffmpeg.org
+# refuses the build machine: GitHub's Windows runners got connection resets there (2026-11-07).
+FFMPEG_MIRROR_SHA256=${FFMPEG_MIRROR_SHA256:-6e374ed621e48faa40639307dff48ba6fe574a509977956d2cce9669b7cc27e9}
 
 case $(uname -s) in
 Linux) windows=0; cc=${CC:-clang-18}; jobs=$(nproc) ;;
@@ -34,9 +38,17 @@ esac
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-curl -fsSL -o "$work/ffmpeg.tar.xz" "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
-echo "$FFMPEG_SHA256  $work/ffmpeg.tar.xz" | sha256sum -c - >/dev/null
-tar xJf "$work/ffmpeg.tar.xz" -C "$work"
+fetch() { curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 -o "$1" "$2"; }
+if fetch "$work/ffmpeg.tar.xz" "$FFMPEG_URL"; then
+    echo "$FFMPEG_SHA256  $work/ffmpeg.tar.xz" | sha256sum -c - >/dev/null
+    tar xJf "$work/ffmpeg.tar.xz" -C "$work"
+else
+    echo "ffmpeg.org refused the download; taking FFmpeg n$FFMPEG_VERSION from its GitHub mirror" >&2
+    fetch "$work/ffmpeg.tar.gz" "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n$FFMPEG_VERSION.tar.gz"
+    echo "$FFMPEG_MIRROR_SHA256  $work/ffmpeg.tar.gz" | sha256sum -c - >/dev/null
+    tar xzf "$work/ffmpeg.tar.gz" -C "$work"
+    mv "$work/FFmpeg-n$FFMPEG_VERSION" "$work/ffmpeg-$FFMPEG_VERSION"
+fi
 
 list() { local IFS=,; echo "$*"; }
 demuxers=(mov matroska avi mp3 ogg flac wav aac image2 png_pipe jpeg_pipe webp_pipe)

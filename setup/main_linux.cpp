@@ -2,13 +2,15 @@
 // theatrhythm-setup (Linux): sets up the release folder it sits in (tools/package.py) from the player's
 // Theatrhythm Final Bar Line dump, so the game starts from theatrhythm-fbl or its menu entry.
 //
-// With no arguments it asks for the game folder (the dump) and the save folder, installs, and offers
+// With no arguments it asks for the game folder (the dump), the save folder, whether to skip the
+// opening movie (settings.ini skip_opening) and an optional extra DLC folder, installs, and offers
 // a menu entry and to start the game: in the terminal it was started from, or with the desktop's
 // dialogs (SDL: the folder picker and message boxes) when it has none, as from a file manager. Run it
 // again to change either folder, or after unpacking a newer release over the folder.
 // With arguments it installs from the command line:
 //
 //     theatrhythm-setup --game <dump or eboot.bin> [--save <folder>] [--copy-saves]
+//                       [--dlc <folder>|--no-dlc] [--skip-opening|--play-opening]
 //                       [--shortcut <folder>|desktop|menu]
 
 #include "setup.h"
@@ -32,7 +34,7 @@ constexpr char kTitle[] = "Theatrhythm Final Bar Line setup";
 
 // The old save folder to copy from when the save folder changes and only the old one has saves.
 std::optional<fs::path> saves_to_move(const fs::path& root, const fs::path& save) {
-    auto old = setup::read_paths(root);
+    auto old = setup::remembered_paths(root);
     if (!old || setup::same_path(old->save, save) || !setup::has_saves(old->save) || setup::has_saves(save))
         return std::nullopt;
     return old->save;
@@ -50,10 +52,16 @@ void err(const std::wstring& s) {
 
 constexpr wchar_t kUsage[] =
     L"usage: theatrhythm-setup --game <dump or eboot.bin> [--save <folder>] [--copy-saves]\n"
+    L"                         [--dlc <folder>|--no-dlc] [--skip-opening|--play-opening]\n"
     L"                         [--shortcut <folder>|desktop|menu]\n"
     L"  --game        the decrypted game dump (eboot.bin, sce_module, sce_sys, Media); only ever read\n"
     L"  --save        where your saves go (default: the one paths.ini names, else save/ here)\n"
     L"  --copy-saves  when --save changes, copy the saves from the old save folder\n"
+    L"  --dlc         one more folder of DLC to read, e.g. shadPS4's addcont (default: the one\n"
+    L"                paths.ini names); --no-dlc reads only the save folder's addcont\n"
+    L"  --skip-opening, --play-opening\n"
+    L"                start at the title screen without the opening movie, or play it again\n"
+    L"                (settings.ini skip_opening; default: leave it as it is)\n"
     L"  --shortcut    also write the game's desktop entry into this folder, onto the Desktop or into\n"
     L"                the application menu\n"
     L"Sets up the folder this program is in. With no arguments, asks for the folders.";
@@ -67,18 +75,24 @@ fs::path shortcut_folder(const std::wstring& where) {
 }
 
 int run_cli(const std::vector<std::wstring>& args) {
-    std::wstring game, save, shortcut;
-    bool copy_saves = false;
+    std::wstring game, save, shortcut, dlc;
+    bool copy_saves = false, no_dlc = false;
+    std::optional<bool> skip_opening;
     for (size_t i = 0; i < args.size(); ++i) {
         const std::wstring& a = args[i];
         std::wstring* value = a == L"--game"       ? &game
                               : a == L"--save"     ? &save
                               : a == L"--shortcut" ? &shortcut
+                              : a == L"--dlc"      ? &dlc
                                                    : nullptr;
         if (value && i + 1 < args.size()) {
             *value = args[++i];
         } else if (a == L"--copy-saves") {
             copy_saves = true;
+        } else if (a == L"--skip-opening" || a == L"--play-opening") {
+            skip_opening = a == L"--skip-opening";
+        } else if (a == L"--no-dlc") {
+            no_dlc = true;
         } else {
             err(a == L"--help" || a == L"-h" ? kUsage : std::wstring(kUsage) + L"\n\nunexpected: " + a);
             return 2;
@@ -92,10 +106,12 @@ int run_cli(const std::vector<std::wstring>& args) {
         setup::Options opt;
         opt.root = setup::exe_folder();
         opt.game = setup::path_of(game);
-        auto old = setup::read_paths(opt.root);
+        auto old = setup::remembered_paths(opt.root);
         opt.save = !save.empty() ? setup::path_of(save) : old ? old->save : setup::default_save();
+        opt.dlc = no_dlc ? fs::path() : !dlc.empty() ? setup::path_of(dlc) : old ? old->dlc : fs::path();
         if (copy_saves)
             opt.copy_saves_from = saves_to_move(opt.root, opt.save);
+        opt.skip_opening = skip_opening;
         fs::path exe = setup::install(opt, out);
         if (!shortcut.empty()) {
             fs::path entry = shortcut_folder(shortcut) / setup::kShortcutName;
@@ -258,12 +274,13 @@ int run_asking(Asker& ask) {
     fs::path root = setup::exe_folder();
     std::optional<setup::Paths> paths;
     try {
-        paths = setup::read_paths(root);
+        paths = setup::remembered_paths(root);
     } catch (const setup::Error&) {
     }
     if (setup::ready(root)) {
         int answer = ask.choose(L"The game is set up.\n\nGame folder: " + setup::text(paths->game) +
-                                    L"\nSave folder: " + setup::text(paths->save),
+                                    L"\nSave folder: " + setup::text(paths->save) +
+                                    (paths->dlc.empty() ? L"" : L"\nExtra DLC folder: " + setup::text(paths->dlc)),
                                 {L"Play Game", L"Set up again", L"Exit"});
         if (answer == 0) {
             play(ask, root);
@@ -288,11 +305,39 @@ int run_asking(Asker& ask) {
     } else if (keep != 0) {
         return 1;
     }
+    // The current choice (settings.ini skip_opening) is the default answer; Install writes the new one.
+    const bool skipping = setup::skip_opening(root, save);
+    std::vector<std::wstring> answers = {L"Skip it", L"Play it"};
+    if (!skipping)
+        std::swap(answers[0], answers[1]);
+    int skip = ask.choose(L"Skip the opening movie (set skip_opening=0 in settings.ini to bring it back)?", answers);
+    if (skip < 0)
+        return 1;
 
+    // An extra DLC folder, read next to the save folder's addcont (e.g. shadPS4's addcont).
+    fs::path dlc = paths ? paths->dlc : fs::path();
+    int extra = dlc.empty()
+                    ? ask.choose(L"Also read DLC from another folder (e.g. shadPS4's addcont)?\n\n"
+                                 L"DLC in the save folder's addcont folder is always read.",
+                                 {L"No", L"Choose a folder", L"Cancel"})
+                    : ask.choose(L"Also read DLC from this folder?\n\n" + setup::text(dlc),
+                                 {L"Yes", L"Choose another folder", L"No", L"Cancel"});
+    if (extra < 0 || extra == (dlc.empty() ? 2 : 3))
+        return 1;
+    if (extra == 1) {
+        std::optional<fs::path> picked = ask.folder(L"Select a folder of DLC (e.g. shadPS4's addcont)", dlc);
+        if (!picked)
+            return 1;
+        dlc = *picked;
+    } else if (!dlc.empty() && extra == 2) {
+        dlc.clear();
+    }
     setup::Options opt;
     opt.root = root;
     opt.game = *game;
     opt.save = save;
+    opt.skip_opening = (skip == 0) == skipping;
+    opt.dlc = dlc;
     try {
         if (auto old = saves_to_move(opt.root, opt.save)) {
             int answer = ask.choose(L"Copy your saves to the new save folder?\n\nFrom: " + setup::text(*old) +
