@@ -232,6 +232,9 @@ otherwise. Set `button_icons` in `settings.ini` to `ps4`, `xbox` or `keyboard` t
 
 Found a problem? [Open an issue](https://github.com/YAPhoa/theatrhythm-fbl-pc/issues) and attach
 `theatrhythm.log` from the `log` folder in your save folder. Any suggestion, just open an issue too.
+If the game closes by itself, it says so in a message and keeps that log as `crash-<date>-<time>.log`
+in the same folder, so starting the game again does not lose it: attach that file. Every crash keeps
+its own file; they are safe to delete once you no longer need them.
 If the picture freezes, leave the game running for half a minute before you close it: after 20
 seconds without a new frame it writes what every thread is doing to that log.
 
