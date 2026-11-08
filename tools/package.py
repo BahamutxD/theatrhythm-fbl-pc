@@ -282,14 +282,16 @@ def ico_png(ico, size=256):
 
 
 def release_name(product='theatrhythm-fbl-pc'):
-    """<product>-<commit>-<date>, or -<commit>-dirty-<date>-<time> for uncommitted work:
-    what release.txt and the zip are named after. Two releases from one dirty tree differ by the
-    packaging time, so the launcher asks for the setup again after either is unpacked."""
+    """<product>-<commit> (v1.0.6, or v1.0.6-3-g1a2b3c4 after the tag), or -<commit>-dirty-<date>-<time>
+    for uncommitted work: what release.txt and the zip are named after. Two releases from one dirty
+    tree differ by the packaging time, so the launcher asks for the setup again after either is
+    unpacked; a commit names its release by itself."""
     def git(*args):
         return subprocess.run(['git', *args], cwd=PORT, capture_output=True, text=True).stdout.strip()
     described = git('describe', '--tags', '--always', '--dirty') or 'unknown'
-    when = time.strftime('%Y-%m-%d-%H%M') if described.endswith('-dirty') else git('log', '-1', '--format=%cs')
-    return f'{product}-{described}-{when}'
+    if described.endswith('-dirty'):
+        described += time.strftime('-%Y-%m-%d-%H%M')
+    return f'{product}-{described}'
 
 
 def copy(source, target):
