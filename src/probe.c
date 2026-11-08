@@ -169,6 +169,26 @@ static void isa_context_regs(CONTEXT *c, IsaRegs *regs, int to_context) {
     for (int i=0;i<16;++i) { if (to_context) *g[i]=regs->gpr[i]; else regs->gpr[i]=*g[i]; }
     if (to_context) c->EFlags=(DWORD)regs->rflags; else regs->rflags=c->EFlags;
 }
+/* THEATRHYTHM_FAULT_SITES=1 (diagnostics): every guest instruction that takes a GPU page-tracking
+ * fault is printed the first time and at each power-of-two count, with the rsp alignment. */
+static struct { volatile LONG64 key, count; } fault_sites[16384];
+static void note_fault_site(const CONTEXT *c, int write) {
+    static int enabled=-1;
+    if (enabled<0) { const char *e=getenv("THEATRHYTHM_FAULT_SITES"); enabled=e && e[0]=='1'; }
+    if (!enabled || !image) return;
+    uint64_t offset=(uint64_t)c->Rip-(uint64_t)(uintptr_t)image;
+    if (offset>=0x20000000) return;
+    LONG64 key=(LONG64)(offset+1)|((LONG64)write<<62);
+    for (uint64_t i=(offset*0x9e3779b97f4a7c15ull)>>50, n=0; n<16384; ++n, i=(i+1)&16383) {
+        LONG64 seen=InterlockedCompareExchange64(&fault_sites[i].key,key,0);
+        if (seen && seen!=key) continue;
+        LONG64 count=InterlockedIncrement64(&fault_sites[i].count);
+        if (!(count&(count-1)))
+            fprintf(stderr,"Fault site: guest 0x%llx %s x%lld rsp%%16=%llu thread %lu\n",(unsigned long long)offset,
+                    write ? "write" : "read",(long long)count,(unsigned long long)(c->Rsp&15),GetCurrentThreadId());
+        return;
+    }
+}
 static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
     const EXCEPTION_RECORD *record=info->ExceptionRecord;
     DWORD code=record->ExceptionCode;
@@ -185,7 +205,10 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
     }
     if (code==EXCEPTION_ACCESS_VIOLATION && record->NumberParameters>=2) {
         /* GPU page tracking (write-protected guest pages) is resolved first. */
-        if (gpu_enabled && theatrhythm_gpu_handle_fault(info,(void *)record->ExceptionInformation[1])) return EXCEPTION_CONTINUE_EXECUTION;
+        if (gpu_enabled && theatrhythm_gpu_handle_fault(info,(void *)record->ExceptionInformation[1])) {
+            note_fault_site(info->ContextRecord,record->ExceptionInformation[0]==1);
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
         if (runtime_fault_recover) {
             /* A speculative guest memory read (GPU draw preparation) faulted: the thread resumes
              * in theatrhythm_longjmp, outside the exception dispatcher, back at its recovery point. */
@@ -229,6 +252,92 @@ static uint64_t patch_tcb_loads(const Segment *segments, uint64_t count) {
             if (at[0]==0x65 && !memcmp(at,load,sizeof(load))) { memcpy(at+5,&displacement,4); ++patched; at+=sizeof(load)-1; }
     }
     return patched;
+}
+/* Guest red-zone protection (#12). Windows writes an exception's frame (CONTEXT and the
+ * thread's live XSAVE state) directly below the faulting rsp, with no SysV red zone. When a guest
+ * leaf function keeps locals there and one of its stores or loads takes a GPU page-tracking fault,
+ * the frame overwrites them: on AVX2-only CPUs whenever the upper ymm halves are in use, on
+ * AVX-512 ones when zmm16-31 are. theatrhythm_redzone_patch (shadPS4's static pass) moves each
+ * memory access made while red-zone data is live to a trampoline that runs it with rsp 128 bytes
+ * lower. Linux skips the red zone when it delivers a signal. THEATRHYTHM_REDZONE=0 turns it off. */
+enum { REDZONE_TRAMPOLINES = 16 << 20 };
+static int compare_u64(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+/* Function starts (image offsets, sorted) from a module's .eh_frame_hdr binary search table. */
+static uint64_t *redzone_function_starts(const unsigned char *image, uint64_t hdr, uint64_t *count) {
+    const unsigned char *p = image + hdr;
+    *count = 0;
+    /* version 1, eh_frame_ptr sdata4/udata4, fde_count udata4, table datarel sdata4 */
+    if (!hdr || p[0] != 1 || (p[1] & 0x0f) != 0x0b || p[2] != 0x03 || p[3] != 0x3b) return NULL;
+    uint32_t n; memcpy(&n, p + 8, 4);
+    uint64_t *starts = malloc((n ? n : 1) * sizeof(*starts));
+    if (!starts) fail("allocation failed");
+    for (uint32_t i = 0; i < n; ++i) {
+        int32_t at; memcpy(&at, p + 12 + (size_t)i * 8, 4);
+        starts[i] = hdr + (int64_t)at;
+    }
+    for (uint32_t i = 1; i < n; ++i) /* the table is sorted; keep it so if a tool did not */
+        if (starts[i] < starts[i - 1]) { qsort(starts, n, sizeof(*starts), compare_u64); break; }
+    *count = n;
+    return starts;
+}
+/* 1 when [at, end) differs between the copy taken before the loader's own code patches and the
+ * image, other than in the displacement of a TCB load (patch_tcb_loads keeps instruction bounds). */
+static int redzone_changed(const unsigned char *before, const unsigned char *image, uint64_t at, uint64_t end) {
+    static const unsigned char load[] = {0x65, 0x48, 0x8b, 0x04, 0x25};
+    if (!memcmp(before + at, image + at, end - at)) return 0;
+    for (uint64_t i = at; i < end; ++i) {
+        if (before[i] == image[i]) continue;
+        int displacement = 0;
+        for (uint64_t j = i >= 8 ? i - 8 : 0; j + 5 <= i && !displacement; ++j)
+            displacement = !memcmp(image + j, load, 5) && !memcmp(before + j, load, 5);
+        if (!displacement) return 1;
+    }
+    return 0;
+}
+static void redzone_protect(unsigned char *image, uint64_t size, unsigned char *trampolines, const unsigned char *before,
+                            const Segment *segments, uint64_t ns, const RuntimeModule *modules, uint64_t module_count,
+                            const RuntimeModule *main_module) {
+    const char *setting = getenv("THEATRHYTHM_REDZONE");
+    if (setting && !strcmp(setting, "0")) { printf("Red zone: protection off (THEATRHYTHM_REDZONE=0)\n"); return; }
+    ULONGLONG start = GetTickCount64();
+    TheatrhythmRedZoneSegment *list = calloc(ns ? ns : 1, sizeof(*list));
+    uint64_t **owned = calloc((module_count + 1) * 2, sizeof(*owned)), listed = 0, skipped = 0;
+    if (!list || !owned) fail("allocation failed");
+    for (uint64_t m = 0; m <= module_count; ++m) {
+        const RuntimeModule *x = m < module_count ? &modules[m] : main_module;
+        uint64_t count, skip_count = 0;
+        uint64_t *starts = redzone_function_starts(image, x->eh_frame_hdr, &count);
+        if (!starts) continue;
+        uint64_t *skip = malloc((count ? count : 1) * sizeof(*skip));
+        if (!skip) fail("allocation failed");
+        owned[m * 2] = starts; owned[m * 2 + 1] = skip;
+        for (uint64_t s = 0; s < ns; ++s) {
+            uint64_t a = segments[s].address, e = a + segments[s].size;
+            if (!(segments[s].flags & 1) || a < x->base || e > x->base + x->size) continue;
+            for (uint64_t i = 0; i < count; ++i) {
+                if (starts[i] < a || starts[i] >= e) continue;
+                uint64_t end = i + 1 < count && starts[i + 1] < e ? starts[i + 1] : e;
+                if (redzone_changed(before, image, starts[i], end)) skip[skip_count++] = starts[i];
+            }
+            list[listed++] = (TheatrhythmRedZoneSegment){a, segments[s].size, starts, count, skip, skip_count};
+        }
+        skipped += skip_count;
+    }
+    TheatrhythmRedZoneResult r;
+    if (theatrhythm_redzone_patch(image, round_page(size), trampolines, REDZONE_TRAMPOLINES, list, listed, &r))
+        fail("red-zone protection failed");
+    printf("Red zone: %" PRIu64 " of %" PRIu64 " memory accesses with live red-zone data moved to trampolines "
+           "(%" PRIu64 " KiB) in %" PRIu64 " functions; %" PRIu64 " functions changed by the loader left alone, "
+           "%" PRIu64 " stack-relative, %" PRIu64 " control flow, %" PRIu64 " not relocatable%s; %" PRIu64 " ms\n",
+           r.patched_memory_instruction_count, r.memory_instruction_count, r.trampoline_bytes >> 10,
+           r.red_zone_function_count, skipped, r.stack_dependent_memory_instruction_count,
+           r.control_flow_memory_instruction_count, r.unrelocatable_memory_instruction_count,
+           r.trampoline_exhausted ? ", trampoline space exhausted" : "", (uint64_t)(GetTickCount64() - start));
+    for (uint64_t i = 0; i < (module_count + 1) * 2; ++i) free(owned[i]);
+    free(owned); free(list);
 }
 #endif
 #ifndef _WIN32
@@ -921,9 +1030,14 @@ int main(int argc, char **argv) {
     size_t stub_area = isa_table ? round_page(isa_stub_area_size(isa_table)) : 0;
     /* Six more pages after them: the Display Settings page's hook stubs (runtime_display_page.c),
      * the field walk's stub (runtime_field_walk.c), the DLC bonus row's (runtime_dlc_bonus.c), the
-     * Xbox pad's (runtime_xbox_pad.c), the opening skip's (runtime_skip_opening.c) and the exit
-     * prompt's (runtime_exit_prompt.c). */
-    image = allocate(round_page(size) + stub_area + 6 * page_size);
+     * Xbox pad's (runtime_xbox_pad.c), the logo and opening skip's (runtime_skip_opening.c) and the exit
+     * prompt's (runtime_exit_prompt.c). On Windows the red-zone trampolines follow (redzone_protect). */
+#ifdef _WIN32
+    size_t redzone_area = REDZONE_TRAMPOLINES;
+#else
+    size_t redzone_area = 0;
+#endif
+    image = allocate(round_page(size) + stub_area + 6 * page_size + redzone_area);
     printf("Runtime: guest image at %p (guest offsets are relative to it)\n", (void *)image);
     unsigned char *stubs = image + round_page(size);
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
@@ -1003,6 +1117,16 @@ int main(int argc, char **argv) {
         fflush(NULL);
         _exit(missing ? 1 : 0); /* no destructors: GPU threads are running */
     }
+#ifdef _WIN32
+    /* The executable segments before the loader's own code patches (redzone_protect). */
+    unsigned char *code_before = NULL;
+    if (!cpu_only) {
+        code_before = malloc(round_page(size));
+        if (!code_before) fail("allocation failed");
+        for (uint64_t i = 0; i < ns; ++i)
+            if (segments[i].flags & 1) memcpy(code_before + segments[i].address, image + segments[i].address, segments[i].size);
+    }
+#endif
     if (!cpu_only) {
         unsigned char *hook_stub = stubs + stub_area;
         for (uint64_t m = 0; m < module_count; ++m)
@@ -1057,6 +1181,15 @@ int main(int argc, char **argv) {
                     missing, r.rewritten, r.jmp, r.relocated, r.int3, r.skipped);
         protect(stubs, stub_area, 5);
     }
+#ifdef _WIN32
+    /* Page tracking runs with the GPU only. */
+    if (code_before) {
+        unsigned char *trampolines = stubs + stub_area + 6 * page_size;
+        redzone_protect(image, size, trampolines, code_before, segments, ns, modules, module_count, &main_module);
+        protect(trampolines, redzone_area, 5);
+        free(code_before);
+    }
+#endif
     runtime_set_report_hook(loader_report_hook);
     protect(traps, round_page((import_count + 1) * 32), 5);
     protect(image, round_page(size), 0);

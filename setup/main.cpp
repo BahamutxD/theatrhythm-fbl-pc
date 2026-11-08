@@ -3,7 +3,7 @@
 // Theatrhythm Final Bar Line dump, so the game starts from theatrhythm-fbl.exe or a desktop shortcut.
 //
 // With no arguments it opens a window: the game folder (the dump), the save folder, an optional extra
-// DLC folder, whether to skip the opening movie (settings.ini skip_opening), Install and Exit; after an
+// DLC folder, whether to skip the logos and the opening movie (settings.ini skip_opening), Install and Exit; after an
 // install it offers a desktop shortcut. Run it again to change a folder, or after unpacking a newer
 // release over the folder.
 // With arguments it installs from the command line:
@@ -86,7 +86,8 @@ constexpr wchar_t kUsage[] =
     L"  --dlc         one more folder of DLC to read, e.g. shadPS4's addcont (default: the one\n"
     L"                paths.ini names); --no-dlc reads only the save folder's addcont\n"
     L"  --skip-opening, --play-opening\n"
-    L"                start at the title screen without the opening movie, or play it again\n"
+    L"                start at the title screen without the start-up logos and the opening\n"
+    L"                movie, or play them again\n"
     L"                (settings.ini skip_opening; default: leave it as it is)\n"
     L"  --shortcut    also write the game's shortcut into this folder, or onto the Desktop\n"
     L"Sets up the folder this exe is in. With no arguments, opens the setup window.";

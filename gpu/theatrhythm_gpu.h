@@ -23,6 +23,27 @@ int theatrhythm_gpu_init(const TheatrhythmGpuConfig *config);
 uintptr_t theatrhythm_gpu_resolve(const char *scoped_nid);
 /* Called first by the loader's SIGSEGV handler: 1 when a GPU page-tracking fault was handled. */
 int theatrhythm_gpu_handle_fault(void *ucontext, void *address);
+/* Windows guest red-zone protection (shadps4/core/redzone_patches.cpp): one executable segment,
+ * its functions' start offsets (sorted, from .eh_frame_hdr) and the starts of functions to leave
+ * alone. Offsets are relative to the image. */
+typedef struct {
+    uint64_t address, size;
+    const uint64_t *function_starts; uint64_t function_count;
+    const uint64_t *skip_starts; uint64_t skip_count;
+} TheatrhythmRedZoneSegment;
+typedef struct {
+    uint64_t function_count, skipped_function_count, instruction_count, red_zone_function_count,
+        indirect_red_zone_function_count, memory_instruction_count, patched_memory_instruction_count,
+        short_memory_instruction_count, stack_dependent_memory_instruction_count,
+        control_flow_memory_instruction_count, unrelocatable_memory_instruction_count,
+        trampoline_bytes, trampoline_exhausted;
+} TheatrhythmRedZoneResult;
+/* Moves each guest memory access made while red-zone data is live to a trampoline (in
+ * `trampolines`, within rel32 reach of the image) that runs it with rsp 128 bytes lower. The image
+ * must still be writable. 0 on success. */
+int theatrhythm_redzone_patch(unsigned char *image, unsigned long long image_size, unsigned char *trampolines,
+                              unsigned long long trampolines_size, const TheatrhythmRedZoneSegment *segments,
+                              unsigned long long segment_count, TheatrhythmRedZoneResult *result);
 /* THEATRHYTHM_WRITE_LOG=1: prints the logged GPU-side writes to guest memory near the fault. */
 void theatrhythm_gpu_dump_guest_writes(void *ucontext);
 /* Keyboard text entry through the game window (IME dialog). begin returns 0 when
@@ -71,8 +92,8 @@ const char *theatrhythm_button_icons(void);
 /* 1 when settings.ini render_resolution (THEATRHYTHM_RENDER_RESOLUTION) is 4k: the game runs in PS4
  * Pro mode with a 3840x2160 video out. Valid once theatrhythm_gpu_init returned. */
 int theatrhythm_render_4k(void);
-/* 1 when settings.ini skip_opening (THEATRHYTHM_SKIP_OPENING) is on: the start goes from the logo to
- * the title screen without the opening movie. Valid once theatrhythm_gpu_init returned. */
+/* 1 when settings.ini skip_opening (THEATRHYTHM_SKIP_OPENING) is on: the start goes to the title
+ * screen without the start-up logos and the opening movie. Valid once theatrhythm_gpu_init returned. */
 int theatrhythm_skip_opening(void);
 /* sceCommonDialogInitialize ran (runtime_services.c): the upstream dialog libraries check it. */
 void theatrhythm_gpu_common_dialog_initialized(void);

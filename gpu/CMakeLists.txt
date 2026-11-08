@@ -113,7 +113,7 @@ add_library(theatrhythm_gpu STATIC ${VIDEO_CORE} ${RECOMPILER} ${COMMON} ${SHIM_
     shadps4/core/libraries/gnmdriver/gnmdriver.cpp
     shadps4/core/libraries/videoout/driver.cpp shadps4/core/libraries/videoout/video_out.cpp
     shadps4/core/libraries/kernel/equeue.cpp ${AVPLAYER} ${HLE_LIBRARIES}
-    shadps4/core/libraries/videodec/video_utils.cpp)
+    shadps4/core/libraries/videodec/video_utils.cpp shadps4/core/redzone_patches.cpp)
 add_dependencies(theatrhythm_gpu host_shaders)
 # The PS4 system UI overlay (save list, text entry, trophy notices): Dear ImGui
 # (third_party/imgui, MIT) with its Vulkan backend and an embedded font (third_party/fonts).
@@ -340,6 +340,15 @@ target_compile_options(wait-diagnostics-test PRIVATE -UNDEBUG)
 add_executable(readback-sources-test EXCLUDE_FROM_ALL ../tests/test_readback_sources.cpp)
 target_include_directories(readback-sources-test PRIVATE shadps4)
 target_compile_options(readback-sources-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+if (WIN32)
+    # Red-zone protection pass on a synthetic leaf function (no game files, no Vulkan device).
+    add_executable(redzone-test EXCLUDE_FROM_ALL ../tests/test_redzone.cpp ../tests/test_gpu_runtime_stubs.cpp
+        ../src/compat_win.c)
+    target_compile_definitions(redzone-test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN sigjmp_buf=theatrhythm_jmp_buf)
+    target_compile_options(redzone-test PRIVATE -UNDEBUG -fPIC -include ${CMAKE_CURRENT_SOURCE_DIR}/../src/compat_win.h)
+    target_include_directories(redzone-test PRIVATE shim shadps4)
+    target_link_libraries(redzone-test PRIVATE theatrhythm_gpu onecore)
+endif()
 add_executable(page-state-test EXCLUDE_FROM_ALL ../tests/test_page_state.cpp)
 target_include_directories(page-state-test PRIVATE ../tests/stubs shim shadps4)
 target_link_libraries(page-state-test PRIVATE Boost::headers)

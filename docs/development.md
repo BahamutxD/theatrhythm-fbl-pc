@@ -32,6 +32,27 @@ entered with rbp 0 (`runtime_enter_guest`, `enter_on_stack`), and `sceKernelGetM
 reports host code as a module without frame data. The walk then ends at the host boundary instead
 of reading host locals as frames (issue #17: the start-up picture's path in the runner's `main`).
 
+Guest code follows the SysV ABI, whose leaf functions keep locals in the 128 bytes below rsp (the
+red zone). Windows has no red zone: an exception's frame (CONTEXT plus the thread's live XSAVE
+state) is written directly below the faulting rsp. The GPU's page tracker write-protects guest
+memory, so when a guest leaf function's store or load takes a tracking fault, Windows overwrites
+that function's locals. The game then reads a zeroed pointer a few instructions later (issues #1
+and #12, FMOD at 0x17433fc; another at 0xdb797e). How much is overwritten depends on the CPU: on
+AVX2-only CPUs whenever the upper ymm halves are in use, on AVX-512 CPUs only when zmm16-31 are.
+At load the runner therefore runs shadPS4's static red-zone pass
+(`gpu/shadps4/core/redzone_patches.cpp`, called from `redzone_protect` in probe.c). It finds
+functions from each module's `.eh_frame_hdr`, works out where red-zone data is live, and moves each
+memory access made then to a trampoline after the image that runs it with rsp 128 bytes lower.
+Functions the loader's own hooks or the ISA rewrite changed are left alone, and so are calls (a
+return address in a trampoline would have no unwind data). The log line
+`Red zone: N of M memory accesses ... moved` gives the counts; `THEATRHYTHM_REDZONE=2` lists the
+accesses it could not move, and `=0` turns the pass off. Linux needs none of this: the kernel skips
+the red zone when it delivers a signal. To test on an AVX-512 PC the way AVX2-only CPUs behave, set
+`THEATRHYTHM_DIRTY_ZMM=1` (zmm31 stays in use on guest threads). `THEATRHYTHM_FAULT_SITES=1` prints
+each guest instruction that takes a tracking fault. `tests/test_redzone.cpp` (`redzone-test`, run by
+`build.sh --test` on Windows) patches a small leaf function that stores into a write-protected page
+and checks that its red-zone locals survive the fault; an unpatched copy shows the overwrite.
+
 The renderer draws at the game's own resolution (2160p in PS4 Pro mode with `render_resolution=4k`,
 the default: `sceKernelIsNeoMode` returns 1, the video out is 3840x2160 and probe.c serves
 `boot.config` with `platform-ps4-videoout-width=3840`; or 1080p) and scales the picture to the window
@@ -155,7 +176,7 @@ picker does (`LanguageController.SwitchLanguage` with `FontResourceManager.Insta
 gives the picker of six a cursor on English when the language is one of the other three.
 
 These patches, the field walk below, the DLC window's bonus row (`src/runtime_dlc_bonus.c`) and the
-opening skip (`src/runtime_skip_opening.c`) work on every game version they know the code of (1.00 and 1.04 so far). The log's first lines name the version (`Game: CUSA32853 version 01.04, ...`: param.sfo's
+logo and opening skip (`src/runtime_skip_opening.c`) work on every game version they know the code of (1.00 and 1.04 so far). The log's first lines name the version (`Game: CUSA32853 version 01.04, ...`: param.sfo's
 `APP_VER` and the module's SHA-256 from `link.json`; a dump that mixes two versions' files says so).
 `src/runtime_game_code.c` finds each place the patches use by its C# name in the game's own
 metadata (`Media/Metadata/global-metadata.dat` and the module's code generation tables, as
@@ -174,12 +195,25 @@ above that (an uncapped `fps_limit`) the party slid along in its idle pose. `src
 sends that comparison through a stub that divides the distance by (60 x `Time.deltaTime`)^2, so
 any frame rate reads like 60; at 60 fps the result is unchanged.
 
-After the start-up logo the game always goes to the Opening scene (`StartUpLogoMain.OnTimelineEvent`
-picks it unless first-time setup is due); the movie can be skipped with Options only once
+After the loading screen, the start-up logos (Final Fantasy 35th anniversary, Square Enix,
+indieszero) are a timeline in the StartUpLogo scene. Its markers reach
+`StartUpLogoMain.OnTimelineEvent`: types 0 and 1 open and close a logo's skip window, in which
+`OnUpdate` jumps the director to that logo's skip time when a button is pressed (and sets a
+"skipped" flag); type 3 starts the music under the logos (`SoundManager.PlaySE`); type 5 sets the
+director's time to the timeline's end, where type 2 stops the sounds with a 1 s fade if a logo was
+skipped and picks the next scene: first-time setup when it
+is due, else the Opening scene, whose movie can be skipped with Options only once
 `UserInfo.LookedOpeningDemo` is set. With `skip_opening=1` in `settings.ini` (the setup's checkbox),
-`src/runtime_skip_opening.c` sends the first `OpeningMain.OnReady` of each start to
-`OpeningMain.endMovie`, the movie's own end: it marks the movie seen and goes to the title screen
-before the movie starts. Later Opening scenes in the same session play as before.
+`src/runtime_skip_opening.c` hooks both scenes:
+- `StartUpLogoMain.OnUpdate` goes, while the scene is not marked skipped (its first frame, before
+  the director has fired a marker), to a stub that marks it and runs type 5's code in
+  `OnTimelineEvent`'s frame: the director jumps to the end and the scene ends as it does after a
+  button skip, so a new save still gets first-time setup. `OnTimelineEvent` drops type 3 in a
+  skipped scene, so the logo music never starts (jumping on the second frame let it play through
+  the fade).
+- The first `OpeningMain.OnReady` of each start goes to `OpeningMain.endMovie`, the movie's own end:
+  it marks the movie seen and goes to the title screen before the movie starts. Later Opening
+  scenes in the same session play as before.
 
 F4 asks "Exit the game?" in the game's own Yes/No window (`src/runtime_exit_prompt.c`), so it has
 the game's look and sounds. The overlay takes the key (Alt+F4 still closes at once); on the game

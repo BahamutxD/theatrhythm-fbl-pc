@@ -94,8 +94,9 @@ int runtime_dlc_bonus_install(unsigned char *image, uint64_t module_base, unsign
  * hooks MSGamePad's per-frame calls, with stubs written to `stubs` (`size` bytes, within rel32 reach
  * of the image, which is still writable). 0 when installed. */
 int runtime_xbox_pad_install(unsigned char *image, uint64_t module_base, unsigned char *stubs, size_t size);
-/* settings.ini skip_opening (runtime_skip_opening.c): the first Opening scene after each start ends
- * before its movie plays, so the logo leads to the title screen; stub written to `stubs` (`size`
+/* settings.ini skip_opening (runtime_skip_opening.c): the start-up logo scene jumps to its end on its
+ * second frame and the first Opening scene after each start ends before its movie plays, so the start
+ * goes to the title screen; stubs written to `stubs` (`size`
  * bytes, within rel32 reach of the image, which is still writable). 0 when installed. */
 int runtime_skip_opening_install(unsigned char *image, uint64_t module_base, unsigned char *stubs, size_t size);
 /* F4 opens the game's own Yes/No window asking "Exit the game?", and Yes ends the game

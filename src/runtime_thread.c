@@ -391,6 +391,14 @@ void runtime_orbis_fpu(void) {
     const uint16_t fpucw=0x037f;
     __asm__ volatile("ldmxcsr %0" : : "m"(mxcsr));
     __asm__ volatile("fldcw %0" : : "m"(fpucw));
+#ifdef _WIN32
+    /* THEATRHYTHM_DIRTY_ZMM=1 (tests): zmm31 stays non-zero on guest threads, so on an AVX-512 CPU
+     * Windows writes the highest XSAVE component on every exception, as AVX2-only CPUs do with the
+     * upper ymm halves: the guest red zone just below rsp is overwritten by each tracking fault. */
+    static int dirty=-1;
+    if (dirty<0) { const char *e=getenv("THEATRHYTHM_DIRTY_ZMM"); dirty=e && e[0]=='1' && __builtin_cpu_supports("avx512f"); }
+    if (dirty) __asm__ volatile(".byte 0x62,0x03,0x05,0x40,0x25,0xff,0xff" ::: "memory"); /* vpternlogd $0xff,zmm31,zmm31,zmm31 */
+#endif
 #endif
 }
 /* The bottom of a guest stack. The first guest frame saves its caller's rbp, and libc's unwinder

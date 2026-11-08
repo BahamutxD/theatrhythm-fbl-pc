@@ -20,3 +20,8 @@ remote_play,web_browser_dialog,disc_map}, network/ssl.{h,cpp}, camera/camera.h a
 system/commondialog.h (headers only). vr_tracker.cpp checks its memory with runtime_memory_is_mapped.
 Then game_live_streaming, screenshot, share_play and video_recording (the ShareMedia plugin's
 sharing services), with np/np_types.h (header only).
+Also (same commit b4e7ae7): core/redzone_patches.cpp is the "Windows static guest red-zone
+protection" part of src/core/cpu_patches.cpp (PR #4802), without its other CPU patches and the
+protected indirect call (no call moves to a trampoline), with the decoding run on every core, a
+byte prefilter, a list of functions to leave alone, Zydis 4's disp.has_displacement and a C entry
+point (theatrhythm_redzone_patch, called from probe.c).

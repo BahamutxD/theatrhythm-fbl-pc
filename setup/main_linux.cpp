@@ -3,7 +3,7 @@
 // Theatrhythm Final Bar Line dump, so the game starts from theatrhythm-fbl or its menu entry.
 //
 // With no arguments it asks for the game folder (the dump), the save folder, whether to skip the
-// opening movie (settings.ini skip_opening) and an optional extra DLC folder, installs, and offers
+// logos and the opening movie (settings.ini skip_opening) and an optional extra DLC folder, installs, and offers
 // a menu entry and to start the game: in the terminal it was started from, or with the desktop's
 // dialogs (SDL: the folder picker and message boxes) when it has none, as from a file manager. Run it
 // again to change either folder, or after unpacking a newer release over the folder.
@@ -60,7 +60,8 @@ constexpr wchar_t kUsage[] =
     L"  --dlc         one more folder of DLC to read, e.g. shadPS4's addcont (default: the one\n"
     L"                paths.ini names); --no-dlc reads only the save folder's addcont\n"
     L"  --skip-opening, --play-opening\n"
-    L"                start at the title screen without the opening movie, or play it again\n"
+    L"                start at the title screen without the start-up logos and the opening\n"
+    L"                movie, or play them again\n"
     L"                (settings.ini skip_opening; default: leave it as it is)\n"
     L"  --shortcut    also write the game's desktop entry into this folder, onto the Desktop or into\n"
     L"                the application menu\n"

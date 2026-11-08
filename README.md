@@ -89,13 +89,14 @@ Linux PC with its own GPU or on a Steam Deck. If you try it there, please report
 3. Choose your **game folder** (the dump) and a **save folder** (by default `save` inside the
    release folder), then press **Install**. Setup prepares the game from your dump in a few
    seconds and offers a desktop shortcut. Your dump is only read, never changed.
-   Tick **Skip the opening movie** to go from the start-up logo straight to the title screen.
+   Tick **Skip the opening movie** to go straight to the title screen: no Final Fantasy 35th
+   anniversary, Square Enix and indieszero logos, no opening movie.
 4. Press **Play Game**. Later, start `theatrhythm-fbl.exe` or the shortcut.
 
 Run `theatrhythm-setup.exe` again any time to change the game or save folder. It offers to copy your
-saves when the save folder moves. To get the opening movie back, untick the box and press
-**Install** again, or set `skip_opening=0` in `settings.ini`. Even with the movie on, **Options**
-skips it once you have watched it through one time.
+saves when the save folder moves. To get the logos and the opening movie back, untick the box and
+press **Install** again, or set `skip_opening=0` in `settings.ini`. With them on, any button skips
+a logo, and **Options** skips the movie once you have watched it through one time.
 
 **DLC you already keep elsewhere**, for example for shadPS4, doesn't need a second copy: choose that
 folder as the **extra DLC folder** in setup (optional; on Linux setup asks, or pass `--dlc <folder>`).
@@ -112,7 +113,7 @@ folder's `addcont`.
    `./theatrhythm-setup` in a terminal and it asks there. It also takes
    `--game <dump> [--save <folder>]` on the command line.
 3. Pick your **game folder** (the dump), keep or change the **save folder**, and choose whether to
-   skip the opening movie. Setup prepares the game in a few seconds and offers an entry in your
+   skip the logos and the opening movie. Setup prepares the game in a few seconds and offers an entry in your
    application menu.
 4. Start the game from the menu entry, or run `./theatrhythm-fbl`.
 
