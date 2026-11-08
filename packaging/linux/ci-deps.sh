@@ -30,9 +30,14 @@ $sudo cmake --install "$work/vulkan-headers/build" >/dev/null
 VMA=${VMA:-v3.1.0}
 $sudo curl -fsSL -o /usr/local/include/vk_mem_alloc.h \
     "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/$VMA/include/vk_mem_alloc.h"
-# SDL3: not packaged in 24.04.
+# SDL3: not packaged in 24.04. The release tarball, else the same tag's source archive (GitHub's
+# release downloads can fail for a while with 504 while the archive service still answers).
 SDL=${SDL:-3.4.16}
-curl -fsSL "https://github.com/libsdl-org/SDL/releases/download/release-$SDL/SDL3-$SDL.tar.gz" | tar xz -C "$work"
+if ! curl -fsSL --retry 3 "https://github.com/libsdl-org/SDL/releases/download/release-$SDL/SDL3-$SDL.tar.gz" | tar xz -C "$work"; then
+    rm -rf "$work/SDL3-$SDL" && mkdir -p "$work/SDL3-$SDL"
+    curl -fsSL --retry 3 "https://github.com/libsdl-org/SDL/archive/refs/tags/release-$SDL.tar.gz" |
+        tar xz --strip-components=1 -C "$work/SDL3-$SDL"
+fi
 cmake -S "$work/SDL3-$SDL" -B "$work/sdl" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
     -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF >/dev/null
 ninja -C "$work/sdl" >/dev/null

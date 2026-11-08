@@ -240,7 +240,9 @@ void runtime_throw_trace_install(void) {
 /* sceKernelGetModuleInfoForUnwind(address, flags, info) (shadPS4 process.cpp): flags 3 and up are
  * EINVAL (info zeroed), no info EFAULT, info->st_size below the 304-byte record EINVAL, an address
  * outside every module ESRCH. Otherwise the module's name, .eh_frame_hdr, .eh_frame and its size,
- * and first segment: libc's unwinder finds the FDEs of a frame with it. */
+ * and first segment: libc's unwinder finds the FDEs of a frame with it. Host code (the runner, a
+ * guest callback's caller) is a module without frame data: on ESRCH the unwinder follows rbp
+ * instead, which host code does not keep as a frame chain (#17). With no frame data it ends there. */
 typedef struct {
     uint64_t st_size;
     char name[256];
@@ -257,7 +259,13 @@ static ABI int32_t module_info_for_unwind(uint64_t address, int32_t flags, Unwin
         for (uint64_t i=0;!m && i<module_count;++i)
             if (offset>=modules[i].base && offset-modules[i].base<modules[i].size) m=&modules[i];
     }
-    if (!m) return KERNEL_ESRCH;
+    if (!m) {
+        if (!runtime_host_code(address)) return KERNEL_ESRCH;
+        memset(info,0,sizeof(*info));
+        info->st_size=sizeof(*info);
+        snprintf(info->name,sizeof(info->name),"%s","host");
+        return 0;
+    }
     uint64_t base=(uint64_t)(uintptr_t)image;
     memset(info,0,sizeof(*info));
     info->st_size=sizeof(*info);

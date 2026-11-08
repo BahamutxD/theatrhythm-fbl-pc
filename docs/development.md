@@ -25,6 +25,13 @@ The pipeline (`run.py`):
    and enters the game. An import with no implementation becomes a trap that prints
    `STOP: first unsupported PS4 import: <name>` and exits.
 
+Guest code runs on host thread stacks, so the bottom of every guest stack is a host frame. IL2CPP
+walks the whole stack with libc's unwinder for each managed exception's trace, and that unwinder
+follows rbp wherever it finds no frame data. So the game's `_start` and every guest thread are
+entered with rbp 0 (`runtime_enter_guest`, `enter_on_stack`), and `sceKernelGetModuleInfoForUnwind`
+reports host code as a module without frame data. The walk then ends at the host boundary instead
+of reading host locals as frames (issue #17: the start-up picture's path in the runner's `main`).
+
 The renderer draws at the game's own resolution (2160p in PS4 Pro mode with `render_resolution=4k`,
 the default: `sceKernelIsNeoMode` returns 1, the video out is 3840x2160 and probe.c serves
 `boot.config` with `platform-ps4-videoout-width=3840`; or 1080p) and scales the picture to the window

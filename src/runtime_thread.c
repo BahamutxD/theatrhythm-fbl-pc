@@ -393,13 +393,29 @@ void runtime_orbis_fpu(void) {
     __asm__ volatile("fldcw %0" : : "m"(fpucw));
 #endif
 }
+/* The bottom of a guest stack. The first guest frame saves its caller's rbp, and libc's unwinder
+ * (IL2CPP walks the whole stack for every managed exception's trace) finds no unwind data for the
+ * host return address there and falls back to following rbp: a host rbp leads it into host locals
+ * (#17: the start-up picture's path in the runner's main frame, read as a frame). entry(arg0, arg1)
+ * runs with rbp 0, the end of the frame chain, as a PS4 thread starts. Its own unwind data (.pdata,
+ * .eh_frame) lets host stack walks (the watchdog's thread dump, debuggers) step through it. */
+#ifdef _WIN32
+#define ENTER_GUEST_BEGIN ".seh_proc runtime_enter_guest\nruntime_enter_guest:\n push %rbp\n .seh_pushreg %rbp\n .seh_endprologue\n"
+#define ENTER_GUEST_END " pop %rbp\n ret\n .seh_endproc\n"
+#else
+#define ENTER_GUEST_BEGIN ".type runtime_enter_guest,@function\nruntime_enter_guest:\n .cfi_startproc\n push %rbp\n" \
+                          " .cfi_def_cfa_offset 16\n .cfi_offset %rbp,-16\n"
+#define ENTER_GUEST_END " pop %rbp\n .cfi_def_cfa_offset 8\n ret\n .cfi_endproc\n .size runtime_enter_guest,.-runtime_enter_guest\n"
+#endif
+__asm__(".text\n.globl runtime_enter_guest\n" ENTER_GUEST_BEGIN
+        " mov %rdi,%rax\n mov %rsi,%rdi\n mov %rdx,%rsi\n xor %ebp,%ebp\n call *%rax\n" ENTER_GUEST_END);
 static void *host_start(void *p) {
     GuestThread *t=p;
     runtime_orbis_fpu();
     attach(t);
     set_host_name(t->name);
     set_host_priority(t->name,t->attr.prio);
-    if (!exit_setjmp(t)) t->result=t->entry(t->argument);
+    if (!exit_setjmp(t)) t->result=runtime_enter_guest((void *)t->entry,t->argument,NULL);
     runtime_thread_keys_cleanup();
     pthread_mutex_lock(&lock); t->finished=1; ++exited;
 #ifdef _WIN32
@@ -690,7 +706,7 @@ static void leave_resume(CONTEXT *c) {
 }
 /* Host code (the runner, its DLLs, Windows) is mapped as executable images; the game image, its
  * rewrite stubs and the hook stubs are not. */
-static int host_code(DWORD64 rip) {
+int runtime_host_code(uint64_t rip) {
     MEMORY_BASIC_INFORMATION m;
     return VirtualQuery((const void *)(uintptr_t)rip,&m,sizeof(m)) && m.Type==MEM_IMAGE;
 }
@@ -789,7 +805,7 @@ static void *proxy_deliver(void *p) {
 /* Host code: this executable's text (not PIE: it sits low) and everything above 1 TiB (shared
  * libraries, the vDSO). The game image, its rewrite stubs and the hook stubs are all lower. */
 extern const char __executable_start[], etext[];
-static int host_code(uint64_t rip) {
+int runtime_host_code(uint64_t rip) {
     return (rip>=(uintptr_t)__executable_start && rip<(uintptr_t)etext) || rip>=(UINT64_C(1)<<40);
 }
 /* A system call that blocks: rax holds its number while it is about to run or will be restarted. */
@@ -833,7 +849,7 @@ static void exception_signal_handler(int sig,siginfo_t *info,void *context) {
         const uint32_t seq=__atomic_load_n(&t->raise_seq,__ATOMIC_ACQUIRE);
         if (__atomic_load_n(&t->raise_done,__ATOMIC_RELAXED)==seq) return; /* answered already */
         const uint64_t rip=(uint64_t)g[REG_RIP];
-        t->raise_ran=t->raise_force || !host_code(rip) || in_wait(t,g);
+        t->raise_ran=t->raise_force || !runtime_host_code(rip) || in_wait(t,g);
         __atomic_store_n(&t->raise_done,seq,__ATOMIC_RELEASE);
         if (!t->raise_ran) return;
     }
@@ -910,7 +926,7 @@ static ABI int32_t raise_exception(GuestThread *t,int32_t signum) {
             continue;
         }
         leave_resume(&x->c);
-        if (!host_code(x->c.Rip)) break;
+        if (!runtime_host_code(x->c.Rip)) break;
         /* Inside the runtime, a host library or a handler on its way out: it may hold a lock the
          * handler needs (every event flag shares one, and the IL2CPP handler waits on a flag), so
          * it runs on until it is back in guest code or blocked. */

@@ -103,12 +103,13 @@ static ABI __attribute__((noreturn)) void unresolved(uint32_t id, uintptr_t argu
     _exit(20); /* no destructors: GPU, audio and guest threads are still running */
 }
 #ifndef _WIN32
-/* enter_on_stack(entry, arg0, arg1, stack_top): call entry(arg0,arg1) on a new stack. */
+/* enter_on_stack(entry, arg0, arg1, stack_top): call entry(arg0,arg1) on a new stack, with rbp 0
+ * (the end of the frame chain, as runtime_enter_guest). */
 void enter_on_stack(void *entry, void *arg0, void *arg1, void *top);
 __asm__(".text\n.globl enter_on_stack\nenter_on_stack:\n"
-        " push %rbp\n mov %rsp,%rbp\n and $-16,%rcx\n mov %rcx,%rsp\n"
-        " mov %rdi,%rax\n mov %rsi,%rdi\n mov %rdx,%rsi\n call *%rax\n"
-        " mov %rbp,%rsp\n pop %rbp\n ret\n");
+        " push %rbp\n push %rbx\n mov %rsp,%rbx\n and $-16,%rcx\n mov %rcx,%rsp\n"
+        " mov %rdi,%rax\n mov %rsi,%rdi\n mov %rdx,%rsi\n xor %ebp,%ebp\n call *%rax\n"
+        " mov %rbx,%rsp\n pop %rbx\n pop %rbp\n ret\n");
 #endif
 static ABI void guest_exit(void) { puts("Runtime: process finalizer callback reached"); }
 #ifdef _WIN32
@@ -1099,8 +1100,7 @@ int main(int argc, char **argv) {
     entered_game=1;
     struct { uint64_t argc; const char *argv[2]; } params = {1, {"/app0/eboot.bin", NULL}};
 #ifdef _WIN32
-    typedef void (ABI *Entry)(void *, void (ABI *)(void));
-    ((Entry)(image + entry))(&params, guest_exit);
+    runtime_enter_guest(image + entry, &params, (void *)guest_exit);
 #else
     /* The guest main thread runs on a stack below 1 TiB like PS4 stacks; 16 MiB, as on Windows. */
     enum { MAIN_STACK=16*1024*1024 };

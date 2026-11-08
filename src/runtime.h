@@ -23,6 +23,10 @@ void runtime_wait_end(const char *what,uint64_t start,const char *detail,long lo
 void runtime_orbis_fpu(void);
 #define ABI __attribute__((sysv_abi))
 typedef void (ABI *GuestCallback)(void);
+/* Calls guest entry(arg0, arg1) with rbp 0, so unwinding and frame walks end there (runtime_thread.c). */
+ABI void *runtime_enter_guest(void *entry, void *arg0, void *arg1);
+/* Host code (the runner, its DLLs, the OS) at this address: no guest frame data there. */
+int runtime_host_code(uint64_t address);
 /* libc.prx's thread-local destructor runner (_sceKernelSetThreadDtors); NULL until it registers. */
 extern GuestCallback runtime_guest_thread_dtors, runtime_guest_thread_atexit_count, runtime_guest_thread_atexit_report;
 void runtime_start(uint64_t capabilities);
