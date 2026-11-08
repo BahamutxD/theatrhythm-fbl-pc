@@ -102,17 +102,17 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.RELEASE }}
-          path: out/${{ env.RELEASE }}.zip
+          path: out/${{ env.RELEASE }}-windows-x64.zip
           compression-level: 0
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.RELEASE }}-debug
-          path: out/${{ env.RELEASE }}-debug.zip
+          path: out/${{ env.RELEASE }}-windows-x64-debug.zip
           compression-level: 0
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.RELEASE }}-symbols
-          path: out/${{ env.RELEASE }}-symbols.zip
+          path: out/${{ env.RELEASE }}-windows-x64-symbols.zip
           compression-level: 0
       - uses: actions/upload-artifact@v4
         with:
@@ -187,17 +187,17 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.RELEASE }}-linux
-          path: out/${{ env.RELEASE }}-linux.tar.gz
+          path: out/${{ env.RELEASE }}-linux-x64.tar.gz
           compression-level: 0
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.RELEASE }}-linux-debug
-          path: out/${{ env.RELEASE }}-linux-debug.tar.gz
+          path: out/${{ env.RELEASE }}-linux-x64-debug.tar.gz
           compression-level: 0
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.RELEASE }}-linux-symbols
-          path: out/${{ env.RELEASE }}-linux-symbols.tar.gz
+          path: out/${{ env.RELEASE }}-linux-x64-symbols.tar.gz
           compression-level: 0
       - uses: actions/upload-artifact@v4
         with:
@@ -228,7 +228,7 @@ jobs:
           path: out
       - name: ${{ matrix.image }}
         run: |
-          mkdir -p unpacked && tar -xzf out/*-linux.tar.gz -C unpacked
+          mkdir -p unpacked && tar -xzf out/*-linux-x64.tar.gz -C unpacked
           chmod +x out/theatrhythm-dlcmaker.AppImage  # artifacts drop the exec bit
           docker run --rm -v "$PWD:/w" "${{ matrix.image }}" \
             bash /w/packaging/linux/smoke-test.sh "/w/unpacked/${{ needs.linux.outputs.release }}" \
@@ -266,5 +266,5 @@ jobs:
         run: |
           chmod +x out/theatrhythm-dlcmaker.AppImage
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
-            --notes "Windows: unzip ${WINDOWS}.zip and run theatrhythm-setup.exe. Linux: extract ${LINUX}-linux.tar.gz and run theatrhythm-setup. Custom songs: the DLC maker is theatrhythm-dlcmaker.exe (Windows) or theatrhythm-dlcmaker.AppImage (Linux); put it in the game's folder. See the README." \
-            "out/${WINDOWS}.zip" "out/${LINUX}-linux.tar.gz" out/theatrhythm-dlcmaker.exe out/theatrhythm-dlcmaker.AppImage
+            --notes "Windows: unzip ${WINDOWS}-windows-x64.zip and run theatrhythm-setup.exe. Linux: extract ${LINUX}-linux-x64.tar.gz and run theatrhythm-setup. Custom songs: the DLC maker is theatrhythm-dlcmaker.exe (Windows) or theatrhythm-dlcmaker.AppImage (Linux); put it in the game's folder. See the README." \
+            "out/${WINDOWS}-windows-x64.zip" "out/${LINUX}-linux-x64.tar.gz" out/theatrhythm-dlcmaker.exe out/theatrhythm-dlcmaker.AppImage

@@ -73,7 +73,7 @@ its command line) builds with its own script:
 CXX=clang++-18 bash tools/dlcmaker/app/build.sh
 ```
 
-`python3 tools/package.py --zip` writes `out/<release>-linux.tar.gz` (also `-symbols`, and
+`python3 tools/package.py --zip` writes `out/<release>-linux-x64.tar.gz` (also `-symbols`, and
 `-debug` with `--debug`): the game, the setup, the libraries they need in `lib/` less the host's
 (glibc, libstdc++, Vulkan, X11/Wayland, audio) and `prepare/`. The setup runs the system's python3.
 
@@ -120,7 +120,7 @@ and setup exes, the DLLs they load (found by walking their imports in `C:\msys64
 | Command | `python tools/package.py --python <embed.zip> --zip` | `python tools/package.py --python <embed.zip> --zip --debug --out dist-debug` |
 | Exes | debug info stripped (game exe ~7 MB) | as built, with debug info (~126 MB) |
 | `diagnose/` | not included | glitch kit from `packaging/windows/diagnose` |
-| Zip | `out/<release>.zip` | `out/<release>-debug.zip` |
+| Zip | `out/<release>-windows-x64.zip` | `out/<release>-windows-x64-debug.zip` |
 
 `<embed.zip>` is the python.org "Windows embeddable package (64-bit)", e.g.
 `https://www.python.org/ftp/python/3.15.1/python-3.15.1-embed-amd64.zip`; check its SHA-256
@@ -153,7 +153,8 @@ diagnose kit wrote there (`game/`, `paths.ini`, `settings.ini`, captures, logs).
 
 ### Symbols for release crashes
 
-A release `--zip` also writes `out/<release>-symbols.zip` with the unstripped exes of that build.
+A release `--zip` also writes `out/<release>-windows-x64-symbols.zip` (`-linux-x64-symbols.tar.gz` on
+Linux) with the unstripped exes of that build.
 It is not for players. A crash in a player's `theatrhythm.log` reads like
 `theatrhythm-fbl.exe+0x1234ab`; resolve it with the symbols of the same release (the name is in the
 player's `release.txt`), adding the image base 0x140000000:
@@ -184,3 +185,10 @@ git tag -a v0.1.0 -m "v0.1.0"
 ```bash
 git push origin v0.1.0
 ```
+
+The archives' names end in the system and architecture (`-windows-x64.zip`, `-linux-x64.tar.gz`).
+Launchers that install from GitHub releases pick a computer's file by its name: Quiver Launcher
+(quiverlauncher.com) reads `windows`/`linux` and `x64` from it; releases up to v1.0.5c had neither,
+so on Windows it picks `theatrhythm-dlcmaker.exe`, the one file named for Windows, over the zip. Keep those words in
+any new name, and don't replace a file of a published release: Quiver pins each file's SHA-256 when
+it first sees it and refuses a changed one (publish a new tag instead).

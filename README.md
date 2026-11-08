@@ -50,8 +50,11 @@ display fully.
 
 From the [latest release](https://github.com/YAPhoa/theatrhythm-fbl-pc/releases/latest):
 
-- **Windows:** `theatrhythm-fbl-pc-<version>.zip`
-- **Linux:** `theatrhythm-fbl-pc-<version>-linux.tar.gz`
+- **Windows:** `theatrhythm-fbl-pc-<version>-windows-x64.zip`
+- **Linux:** `theatrhythm-fbl-pc-<version>-linux-x64.tar.gz`
+
+Releases up to v1.0.5c name them `theatrhythm-fbl-pc-<version>.zip` and
+`theatrhythm-fbl-pc-<version>-linux.tar.gz`.
 
 ## Requirements
 
@@ -108,7 +111,7 @@ folder's `addcont`.
 ### On Linux
 
 1. Extract the release anywhere you can write, for example `~/Games/Theatrhythm`:
-   `tar -xzf theatrhythm-fbl-pc-<version>-linux.tar.gz -C ~/Games`
+   `tar -xzf theatrhythm-fbl-pc-<version>-linux-x64.tar.gz -C ~/Games`
 2. Run `theatrhythm-setup`: open it from your file manager and it asks with dialogs, or run
    `./theatrhythm-setup` in a terminal and it asks there. It also takes
    `--game <dump> [--save <folder>]` on the command line.

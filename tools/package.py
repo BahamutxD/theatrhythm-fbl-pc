@@ -10,7 +10,7 @@ maker's own release (dist-dlcmaker/), a separate download.
 On Linux the same folder holds theatrhythm-fbl and theatrhythm-setup (rpath $ORIGIN/lib), the
 shared libraries they need in lib/ (ldd, less the host's: glibc, libstdc++, Vulkan, the display
 and audio stacks, which must match its drivers), theatrhythm-fbl.png for the desktop entry and
-prepare/ without Python: the setup runs the system's python3. --zip writes <release>-linux.tar.gz
+prepare/ without Python: the setup runs the system's python3. --zip writes <release>-linux-x64.tar.gz
 (and -symbols, -debug), which keeps the files' exec bits and symlinks. Needs ldd, patchelf and strip.
 
 The folder is what a player unpacks: they need neither this repo nor MSYS2. They run
@@ -27,9 +27,13 @@ start theatrhythm-fbl.exe or the desktop shortcut it offers.
 
 --debug packages for chasing a bug on someone's PC instead: the exes keep their debug info and
 diagnose/ holds the glitch kit (packaging/windows/diagnose: start.bat arms the frame capture,
-optimization toggles and reload trigger). Its zip is <release>-debug.zip. A plain --zip also writes
-<release>-symbols.zip with the unstripped exes, which resolve the exe+0x... offsets of a player's
-theatrhythm.log (llvm-addr2line -fe theatrhythm-fbl.exe 0x140000000+offset).
+optimization toggles and reload trigger). Its zip is <release>-windows-x64-debug.zip. A plain --zip also
+writes <release>-windows-x64-symbols.zip with the unstripped exes, which resolve the exe+0x... offsets of a
+player's theatrhythm.log (llvm-addr2line -fe theatrhythm-fbl.exe 0x140000000+offset).
+
+Archive names end in the system and architecture (windows-x64, linux-x64): launchers that install
+from GitHub releases, such as Quiver Launcher, pick the file for a computer by its name; without them,
+Quiver picks theatrhythm-dlcmaker.exe, the one file there named for Windows, over the release zip.
 
 What the setup adds later (game/, paths.ini, settings.ini) and what the kit writes (diagnose/
 captures, its log) is left alone, so dist/ also works as the developer's own install. Never ship
@@ -68,6 +72,8 @@ import zipfile
 PORT = Path(__file__).resolve().parent.parent
 LINUX = sys.platform.startswith('linux')
 EXES = ('theatrhythm-fbl', 'theatrhythm-setup') if LINUX else ('theatrhythm-fbl.exe', 'theatrhythm-setup.exe')
+# In every archive's name, after the release: what launchers tell a download's computer by.
+PLATFORM = 'linux-x64' if LINUX else 'windows-x64'
 # Linux libraries the host provides: bundled, they break its GPU drivers, display connection or audio
 # (libstdc++ too: Mesa needs the one it was built with, at least as new as this build's).
 HOST_LIBS = re.compile(r'^(linux-vdso|ld-linux.*|libc|libm|libdl|librt|libpthread|libresolv|libutil|libnsl|libanl'
@@ -435,7 +441,7 @@ def main():
     p.add_argument('--out', type=Path, help='the folder to fill (default dist, or dist-dlcmaker with --dlcmaker)')
     p.add_argument('--python', type=Path, help='Python to ship with the setup: the python.org embeddable package (folder or .zip), Windows')
     p.add_argument('--ffmpeg', type=Path, help='with --dlcmaker: the ffmpeg to ship (tools/dlcmaker/build-ffmpeg.sh builds it)')
-    p.add_argument('--zip', action='store_true', help='also write out/<release>.zip (and <release>-symbols.zip)')
+    p.add_argument('--zip', action='store_true', help='also write out/<release>-<platform>.zip (.tar.gz on Linux) and its -symbols')
     p.add_argument('--debug', action='store_true', help='keep debug info in the exes and ship the diagnose/ kit')
     p.add_argument('--dlcmaker', action='store_true', help="package the DLC maker's own release instead")
     p.add_argument('--appimagetool', type=Path, help='with --dlcmaker --zip on Linux: appimagetool-x86_64.AppImage')
@@ -530,25 +536,25 @@ def main():
 
     if a.zip and LINUX:
         # tar keeps the exec bits a zip would lose.
-        archive = PORT / 'out' / f'{release}-linux{"-debug" if a.debug else ""}.tar.gz'
+        archive = PORT / 'out' / f'{release}-{PLATFORM}{"-debug" if a.debug else ""}.tar.gz'
         with tarfile.open(archive, 'w:gz', compresslevel=9) as t:
             for name in sorted(shipped):
                 t.add(out / name, f'{release}/{name}')
         print(f'{archive}: {archive.stat().st_size / 2**20:.0f} MiB')
         if not a.debug:
-            symbols = PORT / 'out' / f'{release}-linux-symbols.tar.gz'
+            symbols = PORT / 'out' / f'{release}-{PLATFORM}-symbols.tar.gz'
             with tarfile.open(symbols, 'w:gz', compresslevel=9) as t:
                 for exe in EXES:
                     t.add(PORT / 'out' / exe, exe)
             print(f'{symbols}: {symbols.stat().st_size / 2**20:.0f} MiB (not for players)')
     elif a.zip:
-        archive = PORT / 'out' / f'{release}{"-debug" if a.debug else ""}.zip'
+        archive = PORT / 'out' / f'{release}-{PLATFORM}{"-debug" if a.debug else ""}.zip'
         with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
             for name in sorted(shipped):
                 z.write(out / name, f'{release}/{name}')
         print(f'{archive}: {archive.stat().st_size / 2**20:.0f} MiB')
         if not a.debug:
-            symbols = PORT / 'out' / f'{release}-symbols.zip'
+            symbols = PORT / 'out' / f'{release}-{PLATFORM}-symbols.zip'
             with zipfile.ZipFile(symbols, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
                 for exe in EXES:
                     z.write(PORT / 'out' / exe, exe)
