@@ -237,8 +237,8 @@ otherwise. Set `button_icons` in `settings.ini` to `ps4`, `xbox` or `keyboard` t
 Set `players=2` in `settings.ini` (or `THEATRHYTHM_PLAYERS=2`) to give the game a second PS4 user
 with its own controller. The first gamepad connected is player 1's and the second is player 2's;
 the keyboard and mouse always belong to player 1. Gamepads can be plugged in or swapped while
-playing: a pad that drops is picked up again in its slot. The default is `players=1`, which leaves
-the game exactly as before. Both players share the game's own settings: this only provides the
+playing: a pad that drops is picked up again in its slot. `players=auto` (the template's default) does this only when two gamepads are connected at
+start; `players=1` leaves the game exactly as before, and is what a `settings.ini` without the line gets. Both players share the game's own settings: this only provides the
 second controller, so what the game does with a second user (for example in pairs mode) is up to it.
 
 ## Issues and suggestions

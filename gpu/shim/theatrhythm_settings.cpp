@@ -63,7 +63,7 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "vibration") {
         v.vibration = value.empty() ? 100 : std::clamp(i, 0, 100);
     } else if (key == "players") {
-        v.players = value.empty() ? 1 : std::clamp(i, 1, 2);
+        v.players = value.empty() ? 1 : value == "auto" ? 0 : std::clamp(i, 1, 2);
     } else if (key == "pad_map") {
         v.pad_map = value;
     } else if (key == "key_map") {

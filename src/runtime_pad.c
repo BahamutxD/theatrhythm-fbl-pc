@@ -12,7 +12,7 @@
  *   Q L1, O R1, E L2, U R2 (Page Up/Page Down are L1/R1 too), X L3, M R3,
  *   Tab/P Options, T touchpad click.
  *
- * Two players (settings.ini players=2): the second PS4 user (runtime_services.c) has pad slot 1 with
+ * Two players (settings.ini players=2, or auto with two gamepads connected): the second PS4 user (runtime_services.c) has pad slot 1 with
  * its own handle, sample, rumble and gamepad; the keyboard, mouse and the scripted inputs below stay
  * with player 1 (slot 0). */
 #define _GNU_SOURCE
@@ -75,7 +75,30 @@ _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout"
 
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static int initialized, opened[PAD_SLOTS], sdl_ready;
-static int slots(void) { return theatrhythm_gpu_players()>=2 ? 2 : 1; }
+/* Local players this run. players=auto is decided once, at the first call (the UserService start,
+ * before the game reads a pad): two when two gamepads are connected then, one otherwise. SDL lists
+ * a pad a moment after its subsystem starts, so a single pad is looked for up to 300 ms. */
+int runtime_players(void) {
+    static int decided;
+    const int want=theatrhythm_gpu_players();
+    if (want>0) return want>=2 ? 2 : 1;
+    const int known=__atomic_load_n(&decided,__ATOMIC_ACQUIRE);
+    if (known) return known;
+    int count=0;
+    if (SDL_WasInit(SDL_INIT_GAMEPAD) || SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+        for (int waited=0; waited<30 && count<2; ++waited) {
+            int found=0;
+            SDL_free(SDL_GetGamepads(&found));
+            count=found;
+            if (count<2) SDL_Delay(10);
+        }
+    }
+    const int players=count>=2 ? 2 : 1;
+    __atomic_store_n(&decided,players,__ATOMIC_RELEASE);
+    printf("Runtime: players=auto: %d gamepad(s) connected, playing with %d\n",count,players);
+    return players;
+}
+static int slots(void) { return runtime_players(); }
 /* Slot of an open handle, or -1. */
 static int slot_of(int32_t handle) { return handle>=1 && handle<=PAD_SLOTS && opened[handle-1] ? (int)handle-1 : -1; }
 static size_t reads, vibrations;

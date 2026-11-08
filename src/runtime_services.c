@@ -49,7 +49,7 @@ static void note(const char *what) { printf("Runtime: %s\n",what); }
 
 /* ---- UserService ---- */
 static int login_event_pending=1, login_event_pending2;
-static int players(void) { return theatrhythm_gpu_players()>=2 ? 2 : 1; }
+static int players(void) { return runtime_players(); }
 static ABI int32_t user_initialize(const void *params) {
     (void)params;
     pthread_mutex_lock(&lock); login_event_pending2=players()>=2; pthread_mutex_unlock(&lock);

@@ -158,12 +158,24 @@ static void test_second_player(void) {
     memset(&rumble,0,sizeof(rumble));
 }
 
+/* players=auto with no gamepad connected plays with one, and the answer is kept. */
+static void test_auto_players(void) {
+    stub_players=0;
+    assert(runtime_players()==1 && slots()==1);
+    stub_players=2;
+    assert(runtime_players()==2); /* a fixed setting always wins */
+    stub_players=0;
+    assert(runtime_players()==1); /* decided once */
+    stub_players=1;
+}
+
 int main(void) {
     test_default_keyboard();
     test_key_map();
     test_pad_map();
     test_exit_prompt_no();
     test_second_player();
+    test_auto_players();
     puts("pad tests passed");
     return 0;
 }

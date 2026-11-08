@@ -21,7 +21,7 @@ int theatrhythm_gpu_text_input_begin(const char *text, const char *prompt) { (vo
 int theatrhythm_gpu_text_input_poll(char *text, uint64_t size) { (void)text; (void)size; return 0; }
 static int stub_menu_confirm_swap = 0;
 static int stub_players=1;
-int theatrhythm_gpu_players(void) { return stub_players; }
+int runtime_players(void) { return stub_players; }
 int theatrhythm_gpu_menu_confirm_swap(void) { return stub_menu_confirm_swap; }
 void theatrhythm_gpu_common_dialog_initialized(void) {}
 static char mock_user_dir[512]="user";
