@@ -188,7 +188,7 @@ git push origin v0.1.0
 
 The archives' names end in the system and architecture (`-windows-x64.zip`, `-linux-x64.tar.gz`).
 Launchers that install from GitHub releases pick a computer's file by its name: Quiver Launcher
-(quiverlauncher.com) reads `windows`/`linux` and `x64` from it; releases up to v1.0.5c had neither,
+(quiverlauncher.com) reads `windows`/`linux` and `x64` from it; releases up to v1.0.5b had neither,
 so on Windows it picks `theatrhythm-dlcmaker.exe`, the one file named for Windows, over the zip. Keep those words in
 any new name, and don't replace a file of a published release: Quiver pins each file's SHA-256 when
 it first sees it and refuses a changed one (publish a new tag instead).

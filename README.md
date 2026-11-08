@@ -53,7 +53,7 @@ From the [latest release](https://github.com/YAPhoa/theatrhythm-fbl-pc/releases/
 - **Windows:** `theatrhythm-fbl-pc-<version>-windows-x64.zip`
 - **Linux:** `theatrhythm-fbl-pc-<version>-linux-x64.tar.gz`
 
-Releases up to v1.0.5c name them `theatrhythm-fbl-pc-<version>.zip` and
+Releases up to v1.0.5b name them `theatrhythm-fbl-pc-<version>.zip` and
 `theatrhythm-fbl-pc-<version>-linux.tar.gz`.
 
 ## Requirements
