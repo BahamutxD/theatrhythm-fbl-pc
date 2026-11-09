@@ -43,15 +43,44 @@ At load the runner therefore runs shadPS4's static red-zone pass
 (`gpu/shadps4/core/redzone_patches.cpp`, called from `redzone_protect` in probe.c). It finds
 functions from each module's `.eh_frame_hdr`, works out where red-zone data is live, and moves each
 memory access made then to a trampoline after the image that runs it with rsp 128 bytes lower.
-Functions the loader's own hooks or the ISA rewrite changed are left alone, and so are calls (a
+Code reached only through a `switch` jump table is found by reading the table: a `jmp reg` after
+`movsxd reg, [table + index*4]` and `add reg, table`, with the index bounded by `cmp index, imm` and
+`ja`/`jae`, or by `and r32, imm` and shifts right. On top of upstream's adjacent pattern the pass
+skips unrelated instructions between the load and the add (eboot 0xd34790), follows copies of the
+index (`mov`, `movzx`, a spill through a stack slot) and flag-keeping instructions between the
+`cmp` and its branch (Il2Cpp, FMOD). The table register is its one reaching definition over the
+function's edges, a `lea reg, [rip+d]` (eboot 0x16a9ff0 sets several in earlier blocks); upstream's
+nearest `lea` by address must be that one too. With all edges known each table must come out the
+same again (its register, no way into the path from the bounds check to the jump, as later tables
+can add), or the function is decoded again with that jump left unresolved; a function with an
+unresolved jump is decoded without reaching definitions, where only a path the edges cannot settle
+falls back to upstream's choice. The table's targets are
+the jump's successors in the liveness analysis (upstream gives it none, so data read again in a
+case of a loop through the table counted as dead: 0xd34790's `[rsp-0x10]`, whose loss crashed at
+0xd34962). A pointer jump (`jmp [reg]`, or `jmp reg` right after `mov reg, [reg+d]`, IL2CPP's
+method thunks) is a tail call, not a table, unless a known way in lands between the pointer load and
+the jump. A function whose table the pass still cannot read
+would keep those blocks unprotected; the log line counts these functions (`with an unresolved
+jump table`, 0 in 1.00 and 1.04). Functions the loader's own hooks or the ISA rewrite changed are left alone, and so are calls (a
 return address in a trampoline would have no unwind data). The log line
 `Red zone: N of M memory accesses ... moved` gives the counts; `THEATRHYTHM_REDZONE=2` lists the
-accesses it could not move, and `=0` turns the pass off. Linux needs none of this: the kernel skips
+accesses it could not move and the jumps it could not follow, `=3` also every access it moved,
+each table with its targets, the tail calls and the patched spans (to check against another
+disassembler: no jump may land inside a span), and
+`=0` turns the pass off. `THEATRHYTHM_REDZONE_PROBE=<offset>[,...]` (tests, up to 4) puts a hardware
+execute breakpoint on guest instructions, on the trampoline copy of a moved one, and prints the
+hits: its debug exception writes the exception frame there as a tracking fault would. With
+`THEATRHYTHM_DIRTY_ZMM=1` each hit puts zmm31 back in use, so every exception writes the full frame;
+it ends at rsp rounded down to 64 (rsp-0x10 is reached when rsp % 64 is 8). On a thread where
+zmm31 was not in use yet, that first write into the frame is the probe's own, so list the
+function's entry first: its hit puts zmm31 in use before any probed access runs. Never probe a
+stack-relative access: those are not moved, so the probe clobbers their red zone in any build. Linux needs none of this: the kernel skips
 the red zone when it delivers a signal. To test on an AVX-512 PC the way AVX2-only CPUs behave, set
 `THEATRHYTHM_DIRTY_ZMM=1` (zmm31 stays in use on guest threads). `THEATRHYTHM_FAULT_SITES=1` prints
 each guest instruction that takes a tracking fault. `tests/test_redzone.cpp` (`redzone-test`, run by
-`build.sh --test` on Windows) patches a small leaf function that stores into a write-protected page
-and checks that its red-zone locals survive the fault; an unpatched copy shows the overwrite.
+`build.sh --test` on Windows) patches small leaf functions that store into a write-protected page,
+one per table shape above and a tail call, and checks that their red-zone locals survive the
+fault; an unpatched copy shows the overwrite.
 
 The renderer draws at the game's own resolution (2160p in PS4 Pro mode with `render_resolution=4k`,
 the default: `sceKernelIsNeoMode` returns 1, the video out is 3840x2160 and probe.c serves
@@ -92,7 +121,9 @@ python run.py --timeout 20
 - Hang dump: once a frame has been shown, a picture held for `THEATRHYTHM_HANG_DUMP` seconds
   (default 20, `0` turns it off) logs every thread's name, CPU time and frames (`Hang:` lines, guest
   offsets and host module offsets, innermost first), once until frames move again. The `--timeout`
-  watchdog prints the same thread list before it ends a run.
+  watchdog prints the same thread list before it ends a run. Each thread's stack is copied while
+  it is suspended and walked on the copy (a running thread's live stack changes under the walk and
+  once made the watchdog fault in ntdll); a read that faults anyway ends that thread's walk.
 
 ## Development loop
 
@@ -114,7 +145,10 @@ too, when there is one, since the game reads that one first), and writes `paths.
 and save folders and, when one is chosen, `dlc=`: an extra folder of add-ons. The launcher passes it
 as `--dlc` (`THEATRHYTHM_DLC_DIR` overrides it), and `src/runtime_content.c` lists the folders in
 `<save>/addcont/` and then those in the extra folder (its `<TITLE_ID>/` subfolder when it has one, as
-shadPS4's `addcont` does) whose label the save folder lacks. No release contains a save folder, so
+shadPS4's `addcont` does) whose label the save folder lacks. The game folder is never an add-on: when
+it is the extra folder (DLC kept inside the dump), its own `Media`, `sce_module` and `sce_sys` are
+skipped, since mounting `Media` as an add-on would overlay the game's whole StreamingAssets and fill
+the mount table. No release contains a save folder, so
 unpacking a newer release over the folder keeps it. After that, the game asks for the setup once
 more, because `game/` was prepared for another `release.txt`. The command line does the same as the
 window: `theatrhythm-setup.exe --help`.
@@ -166,6 +200,15 @@ Display Settings is an eighth Options button (`src/runtime_display_page.c`) on t
 sits in an unused corner of the Options atlas, one of the game's encrypted bundles: `run.py prepare`
 decrypts it with the key from the game's own metadata, adds `assets/config_icon/display.bc7` and
 encrypts it again (`scripts/config_icon.py`), and the runtime serves it in place of the game's file.
+
+Its values apply while the game runs: the window thread switches the display mode and resolution
+(`gpu/shim/window.cpp`), and the presenter rebuilds the swapchain for a new VSync choice or window
+size (`Presenter::UpdateSwapchain`). Every swapchain rebuild holds `Scheduler::submit_mutex`, since
+`vkDeviceWaitIdle` and destroying the swapchain must not overlap a GPU thread's `vkQueueSubmit`.
+Without that lock, NVIDIA lost the device when VSync changed around a switch into or out of exclusive
+fullscreen (issue #10). To reproduce that kind of failure, flip the settings from the window thread
+in a test build while the game runs. Set `SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0`: otherwise an
+exclusive fullscreen window that loses focus minimizes and the presenter stops presenting.
 
 The same file lets left and right on Options > Language & Menu Volume > Language step through all
 nine display languages: the game has Korean and Chinese (Traditional, Simplified) text, graphics and
