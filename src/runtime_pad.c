@@ -169,6 +169,7 @@ static void play_click(PadData *d, int slot) {
 
 /* Host thread: one slot's open gamepad. */
 typedef struct { SDL_Gamepad *g; SDL_JoystickID id; uint64_t next_scan; uint8_t connected_count; } HostPad;
+#define FAILOVER_US 3000000 /* player 1's pad gone this long: player 2's pad takes its place */
 /* Closes the slot's gamepad when it is gone or the pad file asked for a reconnect, and looks for one
  * every 100 ms while there is none: the first not held by another slot, so with two players the
  * first gamepad is player 1's and the next player 2's. */
@@ -390,19 +391,39 @@ static void host_read(PadData *d, SDL_Gamepad *g, uint8_t connected_count, int s
     if (k && sample_keyboard(d,k,SDL_GetMouseState(NULL,NULL))) runtime_button_icons_input(BUTTON_ICONS_KEYBOARD);
 }
 
+/* Player 1's gamepad is gone (battery, cable, dropped link) while player 2's is still there: the
+ * menus follow user 1, so after FAILOVER_US player 2's gamepad becomes player 1's and slot 1 waits
+ * for a gamepad, which a pad that comes back then takes. A pad that returns within the grace time
+ * is player 1 again (host_gamepad scans slot 0 first). Returns true when it moved. */
+static bool host_failover(HostPad *pads, uint64_t *lost_since, uint64_t now) {
+    if (slots()<2 || pads[0].g || !pads[1].g) { *lost_since=0; return false; }
+    if (!*lost_since) { *lost_since=now; return false; }
+    if (now-*lost_since<FAILOVER_US) return false;
+    pads[0]=pads[1];
+    pads[1]=(HostPad){.next_scan=now+100000};
+    *lost_since=0;
+    pthread_mutex_lock(&host_lock);
+    memcpy(gamepad_name[0],gamepad_name[1],sizeof(gamepad_name[0]));
+    strcpy(gamepad_name[1],"none");
+    pthread_mutex_unlock(&host_lock);
+    printf("Runtime: gamepad 1 lost: gamepad 2 is now player 1\n");
+    return true;
+}
+
 /* Host thread: samples every millisecond (SDL_DelayNS waits on a high resolution timer) and
  * passes the game's vibration on: when it changes, and every 500 ms while the motors run, as each
  * rumble is sent for 1000 ms. */
 static void *host_thread(void *arg) {
     (void)arg;
     HostPad pads[PAD_SLOTS]={{0}};
-    uint64_t rumble_sent[PAD_SLOTS]={0};
+    uint64_t rumble_sent[PAD_SLOTS]={0}, lost_since=0;
     uint32_t rumble_serial[PAD_SLOTS]={0};
     for (;;) {
         const uint64_t start=now_us();
         if (!sdl_ready) sdl_ready = SDL_WasInit(SDL_INIT_GAMEPAD) ? 1 : SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
         for (int slot=0;slot<slots();++slot) {
             if (sdl_ready>0) host_gamepad(pads,slot,start);
+            if (slot==1 && host_failover(pads,&lost_since,start)) rumble_serial[0]=rumble_serial[1]=0;
             PadData d;
             host_read(&d,pads[slot].g,pads[slot].connected_count,slot);
             pthread_mutex_lock(&host_lock);

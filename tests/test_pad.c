@@ -169,6 +169,36 @@ static void test_auto_players(void) {
     stub_players=1;
 }
 
+/* Player 1's gamepad drops: after the grace time player 2's takes its place; one that comes back
+ * sooner is player 1 again, and a one-player run never moves anything. */
+static void test_failover(void) {
+    SDL_Gamepad *const a=(SDL_Gamepad *)0x1000, *const b=(SDL_Gamepad *)0x2000;
+    HostPad pads[PAD_SLOTS]={{0}};
+    uint64_t lost=0, t=1000000;
+    stub_players=2;
+    pads[0].g=a; pads[1].g=b; pads[1].id=7; pads[1].connected_count=2;
+    assert(!host_failover(pads,&lost,t) && lost==0);            /* both there */
+    pads[0].g=NULL;
+    assert(!host_failover(pads,&lost,t) && lost==t);            /* starts the clock */
+    assert(!host_failover(pads,&lost,t+FAILOVER_US-1) && pads[1].g==b);
+    pads[0].g=a;                                                /* it came back in time */
+    assert(!host_failover(pads,&lost,t+FAILOVER_US) && lost==0 && pads[0].g==a && pads[1].g==b);
+    pads[0].g=NULL; t+=10000000;
+    assert(!host_failover(pads,&lost,t) && !host_failover(pads,&lost,t+FAILOVER_US-1));
+    strcpy(gamepad_name[1],"Pad B");
+    assert(host_failover(pads,&lost,t+FAILOVER_US));            /* moved */
+    assert(pads[0].g==b && pads[0].id==7 && pads[0].connected_count==2 && !pads[1].g && lost==0);
+    assert(!strcmp(gamepad_name[0],"Pad B") && !strcmp(gamepad_name[1],"none"));
+    assert(!host_failover(pads,&lost,t+2*FAILOVER_US));         /* nothing left to move */
+    pads[1].g=a;                                                /* player 1's old pad returns as player 2 */
+    assert(!host_failover(pads,&lost,t+3*FAILOVER_US) && pads[0].g==b && pads[1].g==a);
+    pads[0].g=NULL; pads[1].g=NULL; lost=0;
+    assert(!host_failover(pads,&lost,t) && lost==0);            /* no pads: nothing to move */
+    stub_players=1; pads[0].g=NULL; pads[1].g=b;
+    assert(!host_failover(pads,&lost,t) && !host_failover(pads,&lost,t+9*FAILOVER_US) && !pads[0].g);
+    strcpy(gamepad_name[0],"none"); strcpy(gamepad_name[1],"none");
+}
+
 int main(void) {
     test_default_keyboard();
     test_key_map();
@@ -176,6 +206,7 @@ int main(void) {
     test_exit_prompt_no();
     test_second_player();
     test_auto_players();
+    test_failover();
     puts("pad tests passed");
     return 0;
 }
